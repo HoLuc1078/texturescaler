@@ -1,0 +1,39 @@
+# mods.toml for "Texture Scaler" — a client-side fix mod for atlas stitching failures.
+modLoader="javafml" #mandatory
+loaderVersion="${loader_version_range}" #mandatory
+license="${mod_license}"
+# This mod is purely client-side: it fixes client rendering. Dedicated servers skip it entirely.
+clientSideOnly=true #optional - defaults to false if absent
+
+[[mods]] #mandatory
+modId="${mod_id}" #mandatory
+version="${mod_version}" #mandatory
+displayName="自动贴图缩放 (Texture Scaler)" #mandatory
+authors="${mod_authors}" #optional
+logoFile="texturescaler_logo.png"
+logoBlur=false
+description='''自动贴图缩放 (Texture Scaler) 是一个纯客户端 Forge 1.20.1 Mod。
+
+当显卡的 GL_MAX_TEXTURE_SIZE 较小（例如 AMD RX 580 / Intel 核显）时，部分 Mod 的高清贴图
+(1024~4096px) 会导致方块贴图集拼接失败 (StitcherException / "Requested atlas size ... exceeds maximum")，
+进而使字体（含中文字体）无法加载、显示为方块并最终崩溃。
+本 Mod 会自动把超限的方块/物品贴图等比缩小到显卡支持的范围，无需修改任何 Mod 文件，
+并带有磁盘缓存与模型 UV (texture_size) 安全检查。
+
+A client-side Forge 1.20.1 mod that automatically downscales oversized block/item textures
+to fit the GPU max texture size, fixing atlas stitching failures (StitcherException) on
+AMD/iGPU machines that break fonts and crash the game. No mod files are modified.'''
+
+# Dependencies
+[[dependencies.${mod_id}]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
