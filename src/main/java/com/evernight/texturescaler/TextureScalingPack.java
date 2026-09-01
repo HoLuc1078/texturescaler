@@ -761,6 +761,12 @@ public final class TextureScalingPack implements PackResources {
                             return in.readAllBytes();
                         }
                     }
+                    // The merged manager already contains every pack (including us): an
+                    // empty result means the texture exists nowhere, so the pack-by-pack
+                    // fallback below would only repeat the same lookups (perf: tens of
+                    // thousands of missing lookups per reload). Only reach the fallback
+                    // when the merged query itself failed or we are re-entering.
+                    return null;
                 }
             } catch (Exception ignore) {
                 // fall through to the snapshot
