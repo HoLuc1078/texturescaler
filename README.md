@@ -57,10 +57,31 @@ cap = clamp(GL_MAX_TEXTURE_SIZE / 32, 256, 2048)
 ```bash
 # 需要 JDK 17
 gradlew build
-# 产物：build/libs/texturescaler-1.0.0.jar
+# 产物：build/libs/texturescaler-1.0.1.jar
 ```
 
 放入 `mods/` 即可，服务端不需要安装。
+
+## 更新记录
+
+- **v1.0.1**：正式修复版（在 iGPU / GL_MAX_TEXTURE_SIZE=16384 的机器上实测通过，方块字消除）。
+  在 v1.2.0 的 `listResources` 基础上补齐两处致命问题：
+  - 图集拼接调用的是 `listResources("textures/block", ...)`（vanilla `atlases/blocks.json` 的
+    directory 源 `source: "block"` 被 `FileToIdConverter` 拼成 `textures/block`），而 v1.2.0 只匹配
+    `"textures"` 就提前返回，导致缩放结果（磁盘缓存已生成）**从未真正 emit 进图集列表**，图集仍拿到
+    4096 原图、拼接依旧溢出。本版改为按前缀 `textures/` 匹配。
+  - emit 时未按目录前缀过滤，曾把整个命名空间的全部缩放条目发给每个目录源（如把
+    `textures/entity/...` 也发给 `textures/block` 源），`FileToIdConverter` 对不匹配前缀的路径做
+    `substring` 时抛 `StringIndexOutOfBoundsException` 导致重载失败；现在 emit 前按
+    `path + "/"` 前缀过滤，只输出该目录源名下的条目。
+- **v1.2.0**：修复真正的根因——方块贴图集（atlas）是通过 `ResourceManager.listResources` 枚举
+  `textures/block/` 等目录来获取贴图的，**并不走 `getResource`**；旧版只实现了 `getResource`，
+  导致缩放过的大图永远进不了贴图集、拼接必然溢出。本版实现 `listResources`：每次重载惰性扫描一次
+  完整贴图清单，把超限贴图等比缩小后以覆盖方式重新输出（overlay pack 优先级高于 mod 包，合并时覆盖原图），
+  图集拼接即可成功、字体随之正常加载。
+- **v1.1.0**：修复「命名空间发现依赖资源重载监听器时序」导致 overlay pack 实际不被查询的问题。
+  命名空间改为多来源兜底（资源管理器 + 仓库）且永不缓存空结果；原图读取优先走实时资源管理器（带重入保护）；
+  每次重载输出统计日志（查询/缩放/跳过/缺失/失败数量），便于排查。
 
 ## 作者
 

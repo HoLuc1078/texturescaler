@@ -27,25 +27,32 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The dynamic, highest-priority resource pack that downscales oversized block-atlas
  * textures at load time.
  *
- * <p>For every requested PNG that is (a) under {@code textures/**}, (b) in a namespace we
- * are allowed to touch and (c) actually part of the block atlas (block/item dirs, extra
- * configured dirs, model-referenced textures, or sprites observed in the previous reload),
- * the original bytes are read from the other packs and, if the largest edge exceeds the
- * GPU-derived cap, a scaled-down PNG is served instead.</p>
+ * <p>v1.2 — the crucial fix: the block atlas does NOT fetch textures through
+ * {@link ResourceManager#getResource(ResourceLocation)} — it enumerates them through
+ * {@link ResourceManager#listResources(String, java.util.function.Predicate)} (the vanilla
+ * {@code atlases/blocks.json} "directory" source). The 1.0/1.1 overlay only implemented
+ * {@code getResource}, so its scaled images never reached the atlas and the stitch always
+ * overflowed. We now override {@code listResources} too: the first time any texture listing
+ * happens in a reload we scan the whole merged texture list, downscale every oversized
+ * eligible PNG (block/item dirs, extra dirs, model-referenced, or previously-stitched
+ * sprites) and re-emit those locations; because this pack sits above the mod packs in the
+ * resource stack, our scaled entries overwrite the originals in the merged listing.</p>
  *
- * <p>Everything we do not modify returns {@code null}, letting the resource manager fall
- * through to the original pack — this also avoids recursion when we read originals.</p>
+ * <p>{@code getResource} is kept for non-listing lookups (mods querying individual textures,
+ * Continuity emissive checks, SingleFile/Unstitcher atlas sources).</p>
  */
 public final class TextureScalingPack implements PackResources {
 
@@ -56,6 +63,9 @@ public final class TextureScalingPack implements PackResources {
             + "\"pack_format\":15}}").getBytes(StandardCharsets.UTF_8);
 
     private static final TextureScalingPack INSTANCE = new TextureScalingPack();
+
+    /** How many candidate locations are logged in detail per reload (then only counted). */
+    private static final int SAMPLE_LIMIT = 60;
 
     // ---- global state -----------------------------------------------------
 
@@ -71,7 +81,7 @@ public final class TextureScalingPack implements PackResources {
     /** Texture -> max texture_size edge of referencing models (0 = no constraint). */
     private static volatile Map<String, Integer> modelSizes = Map.of();
 
-    /** "ns:spritePath" set of block-atlas sprites, captured after the previous stitch. */
+    /** "ns:spritePath" set of block-atlas sprites captured after the previous stitch. */
     private static volatile Set<String> blockAtlasSprites = null;
 
     /** Namespaces this pack claims, so the resource manager routes lookups to us. */
@@ -81,7 +91,7 @@ public final class TextureScalingPack implements PackResources {
     /** Extra block-atlas texture directories from the config. */
     private static volatile List<String> extraDirs = List.of();
 
-    /** In-memory scaled results. */
+    /** In-memory scaled results for getResource lookups. */
     private static final ConcurrentHashMap<ResourceLocation, byte[]> scaledCache = new ConcurrentHashMap<>();
 
     /** Locations we decided not to touch (small, model-UV constrained, or unreadable). */
@@ -92,6 +102,26 @@ public final class TextureScalingPack implements PackResources {
 
     /** Re-entrancy guard for the live-resource-manager fallback. */
     private static final ThreadLocal<Boolean> READING_ORIGINAL = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    // ---- listResources (atlas) state ---------------------------------------
+
+    /** Scaled locations -> PNG bytes, computed once per reload for the atlas listing. */
+    private static volatile Map<ResourceLocation, byte[]> listedScaled = Map.of();
+    private static volatile boolean listingComputed = false;
+    private static final Object LISTING_LOCK = new Object();
+
+    /** Re-entrancy guard for the nested manager listing inside our own listResources. */
+    private static final ThreadLocal<Boolean> IN_LISTING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    // ---- per-reload statistics ---------------------------------------------
+
+    private static final AtomicLong statConsulted = new AtomicLong();
+    private static final AtomicLong statScaled = new AtomicLong();
+    private static final AtomicLong statSmall = new AtomicLong();
+    private static final AtomicLong statModelSkipped = new AtomicLong();
+    private static final AtomicLong statMissing = new AtomicLong();
+    private static final AtomicLong statFailed = new AtomicLong();
+    private static final AtomicLong sampled = new AtomicLong();
 
     // -----------------------------------------------------------------------
 
@@ -108,14 +138,25 @@ public final class TextureScalingPack implements PackResources {
 
     /** Called on every resource reload (before background work of this listener). */
     public static void onReloadStart(ResourceManager rm) {
+        resetStats();
+        sampled.set(0);
         if (!Config.enabled()) {
+            LOGGER.info("[TextureScaler] disabled by config, overlay pack inactive");
             return;
         }
-        List<PackResources> snapshot = rm.listPacks().toList();
+        List<PackResources> snapshot;
+        try {
+            snapshot = rm.listPacks().toList();
+        } catch (Exception e) {
+            snapshot = List.of();
+            LOGGER.warn("[TextureScaler] could not list packs: {}", e.toString());
+        }
         sourcePacks = snapshot;
         scaledCache.clear();
         knownUntouched.clear();
         knownMissing.clear();
+        listedScaled = Map.of();
+        listingComputed = false;
         extraDirs = new ArrayList<>(Config.extraTextureDirs());
 
         // Refresh the claimed namespaces from the live pack list (excluding ourselves).
@@ -126,11 +167,11 @@ public final class TextureScalingPack implements PackResources {
             }
             try {
                 for (String s : pack.getNamespaces(PackType.CLIENT_RESOURCES)) {
-                    if (!Config.skipNamespace(s)) {
-                        ns.add(s);
-                    }
+                    ns.add(s);
                 }
-            } catch (Exception ignore) {
+            } catch (Exception e) {
+                LOGGER.warn("[TextureScaler] could not read namespaces of pack {}: {}",
+                        pack.packId(), e.toString());
             }
         }
         claimedNamespaces = Set.copyOf(ns);
@@ -140,10 +181,36 @@ public final class TextureScalingPack implements PackResources {
                 snapshot.size(), currentCap, claimedNamespaces.size());
     }
 
+    /** Log the outcome of a reload (called after the reload barrier completes). */
+    public static void onReloadEnd() {
+        LOGGER.info("[TextureScaler] reload finished: consulted {}, scaled {}, small {}, model-uv-skipped {}, "
+                        + "missing {}, failed {}",
+                statConsulted.get(), statScaled.get(), statSmall.get(),
+                statModelSkipped.get(), statMissing.get(), statFailed.get());
+    }
+
+    private static void resetStats() {
+        statConsulted.set(0);
+        statScaled.set(0);
+        statSmall.set(0);
+        statModelSkipped.set(0);
+        statMissing.set(0);
+        statFailed.set(0);
+    }
+
+    /** Log the first {@link #SAMPLE_LIMIT} decisions in detail (or all when debugLog is on). */
+    private static void sample(ResourceLocation loc, String decision) {
+        long n = sampled.getAndIncrement();
+        if (n < SAMPLE_LIMIT || Config.debugLog()) {
+            LOGGER.info("[TextureScaler]   [{}] {} {}", n + 1, decision, loc);
+        }
+    }
+
     public static void setModelSizes(Map<String, Integer> sizes) {
         modelSizes = sizes == null ? Map.of() : Map.copyOf(sizes);
     }
 
+    /** Called from {@code TextureStitchEvent.Post} (after each stitch). */
     public static void rememberBlockAtlasTextures(Set<ResourceLocation> textures) {
         if (textures == null || textures.isEmpty()) {
             return;
@@ -214,38 +281,80 @@ public final class TextureScalingPack implements PackResources {
         if (type != PackType.CLIENT_RESOURCES || !Config.enabled()) {
             return Set.of();
         }
+        return computeNamespaces();
+    }
+
+    /**
+     * Returns the union of namespaces we may be asked about.
+     *
+     * <p>The {@code MultiPackResourceManager} calls this when it is constructed, which happens
+     * BEFORE any reload listener runs — so this must never depend on listener state alone.
+     * We prefer the snapshot taken from the actual reload pack list
+     * ({@link #onReloadStart}), and otherwise fall back to discovering namespaces from the
+     * live resource manager and the pack repository. Claiming namespaces that end up unused
+     * is harmless (we return {@code null} for anything we do not touch).</p>
+     */
+    private static Set<String> computeNamespaces() {
         Set<String> cached = claimedNamespaces;
-        if (cached != null) {
+        if (cached != null && !cached.isEmpty()) {
             return cached;
         }
-        // Lazily compute from the pack repository (first manager construction).
         synchronized (NAMESPACE_LOCK) {
-            if (claimedNamespaces != null) {
-                return claimedNamespaces;
+            cached = claimedNamespaces;
+            if (cached != null && !cached.isEmpty()) {
+                return cached;
             }
             Set<String> result = new HashSet<>();
+            java.util.concurrent.atomic.AtomicInteger failures = new java.util.concurrent.atomic.AtomicInteger();
+
+            // Source 1: the live resource manager's packs (same set the reload will use).
             try {
                 Minecraft mc = Minecraft.getInstance();
-                if (mc != null) {
+                if (mc != null && mc.getResourceManager() != null) {
+                    mc.getResourceManager().listPacks().forEach(pack -> {
+                        if (pack instanceof TextureScalingPack) {
+                            return;
+                        }
+                        try {
+                            result.addAll(pack.getNamespaces(PackType.CLIENT_RESOURCES));
+                        } catch (Exception e) {
+                            failures.incrementAndGet();
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                failures.incrementAndGet();
+            }
+
+            // Source 2: the pack repository's selected packs.
+            try {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc != null && mc.getResourcePackRepository() != null) {
                     PackRepository repo = mc.getResourcePackRepository();
-                    if (repo != null) {
-                        for (Pack pack : repo.getSelectedPacks()) {
-                            try (PackResources pr = pack.open()) {
-                                if (pr instanceof TextureScalingPack) {
-                                    continue;
-                                }
-                                for (String s : pr.getNamespaces(PackType.CLIENT_RESOURCES)) {
-                                    if (!Config.skipNamespace(s)) {
-                                        result.add(s);
-                                    }
-                                }
+                    for (Pack pack : repo.getSelectedPacks()) {
+                        try (PackResources pr = pack.open()) {
+                            if (pr instanceof TextureScalingPack) {
+                                continue;
                             }
+                            result.addAll(pr.getNamespaces(PackType.CLIENT_RESOURCES));
+                        } catch (Exception e) {
+                            failures.incrementAndGet();
                         }
                     }
                 }
-            } catch (Exception ignore) {
+            } catch (Exception e) {
+                failures.incrementAndGet();
+            }
+
+            if (result.isEmpty()) {
+                // Never cache an empty result: a later call (or reload listener) may succeed.
+                LOGGER.warn("[TextureScaler] namespace discovery returned empty ({} failures); "
+                        + "the overlay pack will not be consulted until namespaces are known", failures.get());
+                return Set.of();
             }
             claimedNamespaces = Set.copyOf(result);
+            LOGGER.info("[TextureScaler] namespace discovery ({} failures): {} namespaces claimed",
+                    failures.get(), result.size());
             return claimedNamespaces;
         }
     }
@@ -296,6 +405,7 @@ public final class TextureScalingPack implements PackResources {
         if (!isEligible(location)) {
             return null;
         }
+        statConsulted.incrementAndGet();
 
         byte[] cached = scaledCache.get(location);
         if (cached != null) {
@@ -305,79 +415,153 @@ public final class TextureScalingPack implements PackResources {
         byte[] original = readOriginal(location);
         if (original == null) {
             knownMissing.add(location);
+            statMissing.incrementAndGet();
+            sample(location, "missing");
             return null;
         }
 
-        int cap = currentCap;
-
-        // Fast path: read the PNG header only — most textures are small and can be
-        // skipped without decoding.
-        int[] dims = readPngDimensions(original);
-        if (dims != null && Math.max(dims[0], dims[1]) <= cap) {
-            knownUntouched.add(location);
+        byte[] scaled = scaleIfNeeded(location, original);
+        if (scaled == null) {
             return null;
         }
+        scaledCache.put(location, scaled);
+        statScaled.incrementAndGet();
+        sample(location, "scaled");
+        final byte[] served = scaled;
+        return () -> new ByteArrayInputStream(served);
+    }
 
-        NativeImage img = null;
-        try {
-            img = NativeImage.read(new ByteArrayInputStream(original));
-            int w = img.getWidth();
-            int h = img.getHeight();
-            int maxEdge = Math.max(w, h);
-            if (w <= 0 || h <= 0 || maxEdge <= cap) {
-                knownUntouched.add(location);
-                return null;
+    /**
+     * The block atlas enumerates its textures through {@code listResources} (vanilla
+     * {@code atlases/blocks.json} "directory" source), NOT through {@code getResource}.
+     * We therefore re-emit every location we downscaled here: because this pack sits above
+     * the mod packs in the resource stack, its entries overwrite the originals in the
+     * merged listing, so the atlas stitches the scaled images.
+     *
+     * <p><b>Important:</b> the {@code path} passed here is the <i>converter prefix</i>,
+     * e.g. {@code "textures/block"} or {@code "textures/item"} (the atlas source
+     * {@code "block"} is prefixed with {@code "textures/"} by {@code DirectoryLister}),
+     * NOT {@code "textures"}. v1.2.0 matched only {@code "textures".equals(path)}, so the
+     * atlas listing ({@code "textures/block"}) never received our scaled images — the
+     * scan ran (cache filled) but nothing was ever emitted. Match by prefix instead.</p>
+     */
+    @Override
+    public void listResources(PackType type, String namespace, String path, ResourceOutput resourceOutput) {
+        if (type != PackType.CLIENT_RESOURCES || !Config.enabled()) {
+            return;
+        }
+        if (!path.startsWith("textures/")) {
+            return;
+        }
+        ensureListingComputed();
+        Map<ResourceLocation, byte[]> scaled = listedScaled;
+        if (scaled.isEmpty()) {
+            return;
+        }
+        // Only re-emit entries that actually live under this listing prefix. DirectoryLister
+        // builds a FileToIdConverter for e.g. "textures/block" and maps every entry back to
+        // a sprite id via substring(prefix.length(), ...); emitting entries from other
+        // directories here (v0.0.1 bug) made it substring past the end and crashed the whole
+        // reload with StringIndexOutOfBoundsException in FileToIdConverter.m_245273_.
+        String prefix = path + "/";
+        int emitted = 0;
+        for (Map.Entry<ResourceLocation, byte[]> e : scaled.entrySet()) {
+            if (e.getKey().getNamespace().equals(namespace)
+                    && e.getKey().getPath().startsWith(prefix)) {
+                byte[] bytes = e.getValue();
+                resourceOutput.accept(e.getKey(), () -> new ByteArrayInputStream(bytes));
+                emitted++;
             }
-
-            // Blockbench-style models with absolute-pixel UVs would break if their
-            // texture_size exceeds the new size (doc pitfall #2) — leave them alone.
-            int modelSize = modelSizes.getOrDefault(spriteKey(location), 0);
-            if (modelSize > cap) {
-                knownUntouched.add(location);
-                if (Config.debugLog()) {
-                    LOGGER.info("[TextureScaler] skip {} (model texture_size {} > cap {})",
-                            location, modelSize, cap);
-                }
-                return null;
-            }
-
-            int newW = Math.max(1, (int) Math.round((long) w * cap / maxEdge));
-            int newH = Math.max(1, (int) Math.round((long) h * cap / maxEdge));
-
-            byte[] png = TextureCache.get(location.getNamespace(), location.getPath(), w, h, cap);
-            if (png == null) {
-                NativeImage scaled = downscale(img, newW, newH);
-                try {
-                    png = scaled.asByteArray();
-                } finally {
-                    scaled.close();
-                }
-                TextureCache.put(location.getNamespace(), location.getPath(), w, h, cap, png);
-            }
-
-            byte[] result = png;
-            scaledCache.put(location, result);
-            if (Config.debugLog()) {
-                LOGGER.info("[TextureScaler] scaled {} {}x{} -> {}x{}", location, w, h, newW, newH);
-            }
-            return () -> new ByteArrayInputStream(result);
-        } catch (Exception e) {
-            // Unreadable/unsupported image: leave it alone rather than crash the reload.
-            knownUntouched.add(location);
-            if (Config.debugLog()) {
-                LOGGER.warn("[TextureScaler] failed to process {}: {}", location, e.toString());
-            }
-            return null;
-        } finally {
-            if (img != null) {
-                img.close();
-            }
+        }
+        if (emitted > 0) {
+            LOGGER.info("[TextureScaler] listResources(ns={}, path={}): emitted {} scaled textures",
+                    namespace, path, emitted);
         }
     }
 
-    @Override
-    public void listResources(PackType type, String namespace, String path, ResourceOutput resourceOutput) {
-        // We do not enumerate; the original packs list everything.
+    /**
+     * Computes (once per reload) the set of textures that must be downscaled for the atlas,
+     * by listing the whole merged texture tree and scaling every oversized eligible PNG.
+     * The nested listing is recursion-guarded so our own {@code listResources} contributes
+     * nothing to it and the originals are what we process.
+     */
+    private static void ensureListingComputed() {
+        if (listingComputed) {
+            return;
+        }
+        synchronized (LISTING_LOCK) {
+            if (listingComputed) {
+                return;
+            }
+            Map<ResourceLocation, byte[]> result = new HashMap<>();
+            long started = System.currentTimeMillis();
+            try {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc == null || mc.getResourceManager() == null) {
+                    LOGGER.warn("[TextureScaler] no resource manager available for atlas scan");
+                    listingComputed = true; // avoid hot-looping; retried next reload
+                    listedScaled = result;
+                    return;
+                }
+                if (IN_LISTING.get()) {
+                    return; // recursion guard failed somewhere; do not emit
+                }
+                IN_LISTING.set(Boolean.TRUE);
+                try {
+                    Map<ResourceLocation, Resource> all =
+                            mc.getResourceManager().listResources("textures",
+                                    loc -> loc.getPath().endsWith(".png"));
+                    int eligible = 0;
+                    for (Map.Entry<ResourceLocation, Resource> e : all.entrySet()) {
+                        ResourceLocation loc = e.getKey();
+                        if (!isCandidate(loc) || !isEligible(loc)) {
+                            continue;
+                        }
+                        eligible++;
+                        statConsulted.incrementAndGet();
+
+                        // Cheap header peek: most textures are small and can be skipped
+                        // without reading the whole file.
+                        int[] dims;
+                        try (InputStream in = e.getValue().open()) {
+                            dims = readPngDimensions(in.readNBytes(24));
+                        } catch (Exception ex) {
+                            statFailed.incrementAndGet();
+                            sample(loc, "failed(" + ex + ")");
+                            continue;
+                        }
+                        if (dims != null && Math.max(dims[0], dims[1]) <= currentCap) {
+                            statSmall.incrementAndGet();
+                            sample(loc, "small");
+                            continue;
+                        }
+
+                        byte[] original;
+                        try (InputStream in = e.getValue().open()) {
+                            original = in.readAllBytes();
+                        } catch (Exception ex) {
+                            statFailed.incrementAndGet();
+                            sample(loc, "failed(" + ex + ")");
+                            continue;
+                        }
+                        byte[] scaled = scaleIfNeeded(loc, original);
+                        if (scaled != null) {
+                            result.put(loc, scaled);
+                            statScaled.incrementAndGet();
+                            sample(loc, "scaled");
+                        }
+                    }
+                    LOGGER.info("[TextureScaler] atlas scan: {} textures listed, {} eligible, {} downscaled in {} ms",
+                            all.size(), eligible, result.size(), System.currentTimeMillis() - started);
+                } finally {
+                    IN_LISTING.set(Boolean.FALSE);
+                }
+            } catch (Exception e) {
+                LOGGER.warn("[TextureScaler] atlas scan failed: {}", e.toString());
+            }
+            listedScaled = result;
+            listingComputed = true;
+        }
     }
 
     @Override
@@ -443,25 +627,79 @@ public final class TextureScalingPack implements PackResources {
         return new int[]{w, h};
     }
 
-    /** Read the original bytes from the other packs (snapshot first, then live manager). */
-    private static byte[] readOriginal(ResourceLocation loc) {
-        for (PackResources pack : sourcePacks) {
-            if (pack instanceof TextureScalingPack) {
-                continue;
+    /**
+     * Downscales {@code original} if its largest edge exceeds the cap; returns the scaled
+     * PNG bytes, or {@code null} when the texture should be left alone (small, model-UV
+     * constrained, or unreadable). Uses the disk cache when enabled.
+     */
+    private static byte[] scaleIfNeeded(ResourceLocation loc, byte[] original) {
+        int cap = currentCap;
+
+        // Fast path: read the PNG header only — most textures are small and can be
+        // skipped without decoding.
+        int[] dims = readPngDimensions(original);
+        if (dims != null && Math.max(dims[0], dims[1]) <= cap) {
+            knownUntouched.add(loc);
+            statSmall.incrementAndGet();
+            sample(loc, "small");
+            return null;
+        }
+
+        NativeImage img = null;
+        try {
+            img = NativeImage.read(new ByteArrayInputStream(original));
+            int w = img.getWidth();
+            int h = img.getHeight();
+            int maxEdge = Math.max(w, h);
+            if (w <= 0 || h <= 0 || maxEdge <= cap) {
+                knownUntouched.add(loc);
+                statSmall.incrementAndGet();
+                sample(loc, "small");
+                return null;
             }
-            try {
-                IoSupplier<InputStream> supplier = pack.getResource(PackType.CLIENT_RESOURCES, loc);
-                if (supplier != null) {
-                    try (InputStream in = supplier.get()) {
-                        return in.readAllBytes();
-                    }
+
+            // Blockbench-style models with absolute-pixel UVs would break if their
+            // texture_size exceeds the new size (doc pitfall #2) — leave them alone.
+            int modelSize = modelSizes.getOrDefault(spriteKey(loc), 0);
+            if (modelSize > cap) {
+                knownUntouched.add(loc);
+                statModelSkipped.incrementAndGet();
+                sample(loc, "model-uv-skip(" + modelSize + ")");
+                return null;
+            }
+
+            int newW = Math.max(1, (int) Math.round((long) w * cap / maxEdge));
+            int newH = Math.max(1, (int) Math.round((long) h * cap / maxEdge));
+
+            byte[] png = TextureCache.get(loc.getNamespace(), loc.getPath(), w, h, cap);
+            if (png == null) {
+                NativeImage scaled = downscale(img, newW, newH);
+                try {
+                    png = scaled.asByteArray();
+                } finally {
+                    scaled.close();
                 }
-            } catch (Exception ignore) {
-                // try the next pack
+                TextureCache.put(loc.getNamespace(), loc.getPath(), w, h, cap, png);
+            }
+            return png;
+        } catch (Exception e) {
+            // Unreadable/unsupported image: leave it alone rather than crash the reload.
+            knownUntouched.add(loc);
+            statFailed.incrementAndGet();
+            sample(loc, "failed(" + e + ")");
+            return null;
+        } finally {
+            if (img != null) {
+                img.close();
             }
         }
-        // Fallback: ask the live resource manager (it skips us via the re-entrancy guard,
-        // so this resolves to the original texture without infinite recursion).
+    }
+
+    /**
+     * Read the original bytes: prefer the live resource manager (it always reflects the
+     * current reload and skips us via the re-entrancy guard), then the reload snapshot.
+     */
+    private static byte[] readOriginal(ResourceLocation loc) {
         if (!READING_ORIGINAL.get()) {
             READING_ORIGINAL.set(Boolean.TRUE);
             try {
@@ -475,8 +713,24 @@ public final class TextureScalingPack implements PackResources {
                     }
                 }
             } catch (Exception ignore) {
+                // fall through to the snapshot
             } finally {
                 READING_ORIGINAL.set(Boolean.FALSE);
+            }
+        }
+        for (PackResources pack : sourcePacks) {
+            if (pack instanceof TextureScalingPack) {
+                continue;
+            }
+            try {
+                IoSupplier<InputStream> supplier = pack.getResource(PackType.CLIENT_RESOURCES, loc);
+                if (supplier != null) {
+                    try (InputStream in = supplier.get()) {
+                        return in.readAllBytes();
+                    }
+                }
+            } catch (Exception ignore) {
+                // try the next pack
             }
         }
         return null;

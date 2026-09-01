@@ -30,7 +30,6 @@ public class TextureScalerReloadListener implements PreparableReloadListener {
                     TextureScalingPack.setModelSizes(sizes);
                 }, backgroundExecutor)
                 .thenCompose(barrier::wait)
-                .thenRun(() -> {
-                });
+                .thenRun(TextureScalingPack::onReloadEnd);
     }
 }

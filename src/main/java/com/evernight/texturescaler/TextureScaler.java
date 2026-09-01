@@ -45,7 +45,8 @@ public class TextureScaler {
         modBus.addListener(this::registerReloadListeners);
         // Add our overlay pack (fired on the mod bus during client construction).
         modBus.addListener(this::onAddPackFinders);
-        // Learn the exact block-atlas sprite set (used for the next reload).
+        // Learn the exact block-atlas sprite set after each stitch; used by the next reload.
+        // (Forge 1.20.1 has no TextureStitchEvent.Pre — only Post.)
         modBus.addListener(this::onTextureStitchPost);
 
         context.registerConfig(ModConfig.Type.CLIENT, Config.SPEC);
