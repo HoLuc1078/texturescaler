@@ -511,7 +511,13 @@ public final class TextureScalingPack implements PackResources {
                     Map<ResourceLocation, Resource> all =
                             mc.getResourceManager().listResources("textures",
                                     loc -> loc.getPath().endsWith(".png"));
+
+                    // Reuse previously read dimensions so we do not open every PNG again.
+                    // New/unknown entries get a 24-byte header peek and extend the manifest.
+                    Map<String, int[]> knownSizes = TextureCache.loadSizeManifest(currentCap);
+                    int manifestEntries = 0;
                     int eligible = 0;
+                    int fromCache = 0;
                     for (Map.Entry<ResourceLocation, Resource> e : all.entrySet()) {
                         ResourceLocation loc = e.getKey();
                         if (!isCandidate(loc) || !isEligible(loc)) {
@@ -520,20 +526,49 @@ public final class TextureScalingPack implements PackResources {
                         eligible++;
                         statConsulted.incrementAndGet();
 
-                        // Cheap header peek: most textures are small and can be skipped
-                        // without reading the whole file.
-                        int[] dims;
-                        try (InputStream in = e.getValue().open()) {
-                            dims = readPngDimensions(in.readNBytes(24));
-                        } catch (Exception ex) {
-                            statFailed.incrementAndGet();
-                            sample(loc, "failed(" + ex + ")");
-                            continue;
+                        int[] dims = knownSizes.get(loc.toString());
+                        if (dims == null) {
+                            // Cheap header peek: most textures are small and can be skipped
+                            // without reading the whole file.
+                            try (InputStream in = e.getValue().open()) {
+                                dims = readPngDimensions(in.readNBytes(24));
+                            } catch (Exception ex) {
+                                statFailed.incrementAndGet();
+                                sample(loc, "failed(" + ex + ")");
+                                continue;
+                            }
+                            if (dims != null) {
+                                knownSizes.put(loc.toString(), dims);
+                                manifestEntries++;
+                            }
                         }
                         if (dims != null && Math.max(dims[0], dims[1]) <= currentCap) {
                             statSmall.incrementAndGet();
                             sample(loc, "small");
                             continue;
+                        }
+
+                        // Blockbench models with absolute-pixel UVs would break if their
+                        // texture_size exceeds the cap — checked before any cache/decode work.
+                        int modelSize = modelSizes.getOrDefault(spriteKey(loc), 0);
+                        if (modelSize > currentCap) {
+                            statModelSkipped.incrementAndGet();
+                            sample(loc, "model-uv-skip(" + modelSize + ")");
+                            continue;
+                        }
+
+                        // Oversized: with header dims we can hit the disk cache without
+                        // decoding the original image.
+                        if (dims != null) {
+                            byte[] png = TextureCache.get(
+                                    loc.getNamespace(), loc.getPath(), dims[0], dims[1], currentCap);
+                            if (png != null) {
+                                result.put(loc, png);
+                                statScaled.incrementAndGet();
+                                fromCache++;
+                                sample(loc, "scaled(cached)");
+                                continue;
+                            }
                         }
 
                         byte[] original;
@@ -551,8 +586,13 @@ public final class TextureScalingPack implements PackResources {
                             sample(loc, "scaled");
                         }
                     }
-                    LOGGER.info("[TextureScaler] atlas scan: {} textures listed, {} eligible, {} downscaled in {} ms",
-                            all.size(), eligible, result.size(), System.currentTimeMillis() - started);
+                    if (manifestEntries > 0) {
+                        TextureCache.saveSizeManifest(currentCap, knownSizes);
+                    }
+                    LOGGER.info("[TextureScaler] atlas scan: {} textures listed, {} eligible, "
+                                    + "{} downscaled ({} from cache, {} new) in {} ms",
+                            all.size(), eligible, result.size(), fromCache,
+                            result.size() - fromCache, System.currentTimeMillis() - started);
                 } finally {
                     IN_LISTING.set(Boolean.FALSE);
                 }
@@ -630,7 +670,8 @@ public final class TextureScalingPack implements PackResources {
     /**
      * Downscales {@code original} if its largest edge exceeds the cap; returns the scaled
      * PNG bytes, or {@code null} when the texture should be left alone (small, model-UV
-     * constrained, or unreadable). Uses the disk cache when enabled.
+     * constrained, or unreadable). Uses the disk cache when enabled — with header dims the
+     * cached entry is served without decoding the original image.
      */
     private static byte[] scaleIfNeeded(ResourceLocation loc, byte[] original) {
         int cap = currentCap;
@@ -643,6 +684,27 @@ public final class TextureScalingPack implements PackResources {
             statSmall.incrementAndGet();
             sample(loc, "small");
             return null;
+        }
+
+        // Blockbench-style models with absolute-pixel UVs would break if their
+        // texture_size exceeds the new size (doc pitfall #2) — leave them alone.
+        // Decided before decoding: it only depends on the model scan, not the pixels.
+        int modelSize = modelSizes.getOrDefault(spriteKey(loc), 0);
+        if (modelSize > cap) {
+            knownUntouched.add(loc);
+            statModelSkipped.incrementAndGet();
+            sample(loc, "model-uv-skip(" + modelSize + ")");
+            return null;
+        }
+
+        // Disk-cache fast path: with header dims we can serve the cached scaled PNG
+        // without decoding the (possibly huge) original. Counting is left to the caller
+        // (ensureListingComputed / getResource) so stats are not double-counted.
+        if (dims != null) {
+            byte[] png = TextureCache.get(loc.getNamespace(), loc.getPath(), dims[0], dims[1], cap);
+            if (png != null) {
+                return png;
+            }
         }
 
         NativeImage img = null;
@@ -658,29 +720,17 @@ public final class TextureScalingPack implements PackResources {
                 return null;
             }
 
-            // Blockbench-style models with absolute-pixel UVs would break if their
-            // texture_size exceeds the new size (doc pitfall #2) — leave them alone.
-            int modelSize = modelSizes.getOrDefault(spriteKey(loc), 0);
-            if (modelSize > cap) {
-                knownUntouched.add(loc);
-                statModelSkipped.incrementAndGet();
-                sample(loc, "model-uv-skip(" + modelSize + ")");
-                return null;
-            }
-
             int newW = Math.max(1, (int) Math.round((long) w * cap / maxEdge));
             int newH = Math.max(1, (int) Math.round((long) h * cap / maxEdge));
 
-            byte[] png = TextureCache.get(loc.getNamespace(), loc.getPath(), w, h, cap);
-            if (png == null) {
-                NativeImage scaled = downscale(img, newW, newH);
-                try {
-                    png = scaled.asByteArray();
-                } finally {
-                    scaled.close();
-                }
-                TextureCache.put(loc.getNamespace(), loc.getPath(), w, h, cap, png);
+            NativeImage scaled = downscale(img, newW, newH);
+            byte[] png;
+            try {
+                png = scaled.asByteArray();
+            } finally {
+                scaled.close();
             }
+            TextureCache.put(loc.getNamespace(), loc.getPath(), w, h, cap, png);
             return png;
         } catch (Exception e) {
             // Unreadable/unsupported image: leave it alone rather than crash the reload.

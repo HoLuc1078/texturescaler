@@ -1,5 +1,10 @@
 package com.evernight.texturescaler;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
@@ -7,13 +12,17 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.Reader;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.Map;
 
 /**
  * Small on-disk cache for downscaled textures.
@@ -29,6 +38,74 @@ final class TextureCache {
     private static volatile Path cacheDir;
 
     private TextureCache() {
+    }
+
+    /** Name of the size manifest inside the cache dir. */
+    private static final String SIZES_FILE = "sizes.json";
+
+    /**
+     * Load the persisted "texture path -> [w, h]" manifest, or an empty map when absent,
+     * corrupt, or built for a different cap.
+     *
+     * <p>The manifest lets the atlas scan reuse previously read PNG dimensions instead of
+     * opening and reading a 24-byte header from every texture on every launch.</p>
+     */
+    static Map<String, int[]> loadSizeManifest(int cap) {
+        Map<String, int[]> result = new HashMap<>();
+        if (!Config.diskCacheEnabled()) {
+            return result;
+        }
+        Path file = dir().resolve(SIZES_FILE);
+        if (!Files.isRegularFile(file)) {
+            return result;
+        }
+        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+            if (!root.has("cap") || root.get("cap").getAsInt() != cap) {
+                return result; // different scaling cap -> dimensions still valid, but rebuild anyway
+            }
+            JsonObject files = root.has("files") ? root.getAsJsonObject("files") : null;
+            if (files != null) {
+                for (Map.Entry<String, JsonElement> e : files.entrySet()) {
+                    JsonArray a = e.getValue().getAsJsonArray();
+                    if (a.size() >= 2) {
+                        result.put(e.getKey(), new int[]{a.get(0).getAsInt(), a.get(1).getAsInt()});
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("[TextureScaler] size manifest read failed (will rebuild): {}", e.toString());
+            return new HashMap<>();
+        }
+        return result;
+    }
+
+    /** Persist the "texture path -> [w, h]" manifest (best effort, atomic rename). */
+    static void saveSizeManifest(int cap, Map<String, int[]> sizes) {
+        if (!Config.diskCacheEnabled()) {
+            return;
+        }
+        JsonObject files = new JsonObject();
+        for (Map.Entry<String, int[]> e : sizes.entrySet()) {
+            JsonArray a = new JsonArray();
+            a.add(e.getValue()[0]);
+            a.add(e.getValue()[1]);
+            files.add(e.getKey(), a);
+        }
+        JsonObject root = new JsonObject();
+        root.addProperty("cap", cap);
+        root.add("files", files);
+        try {
+            Path dir = dir();
+            Path target = dir.resolve(SIZES_FILE);
+            Path tmp = target.resolveSibling(SIZES_FILE + ".tmp");
+            try (Writer writer = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
+                new Gson().toJson(root, writer);
+            }
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            LOGGER.warn("[TextureScaler] size manifest write failed: {}", e.toString());
+        }
     }
 
     static synchronized Path dir() {

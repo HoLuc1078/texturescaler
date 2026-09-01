@@ -57,13 +57,20 @@ cap = clamp(GL_MAX_TEXTURE_SIZE / 32, 256, 2048)
 ```bash
 # 需要 JDK 17
 gradlew build
-# 产物：build/libs/texturescaler-1.0.1.jar
+# 产物：build/libs/texturescaler-1.0.2.jar
 ```
 
 放入 `mods/` 即可，服务端不需要安装。
 
 ## 更新记录
 
+- **v1.0.2**：启动提速。实测每次启动要跑两轮资源重载（另一 mod 触发），且每次都要全量扫描 3 万张贴图：
+  - 新增磁盘尺寸清单（`cache/sizes.json`）：贴图路径 → 宽高的持久化清单，下次启动直接复用，
+    不再对每张贴图重新打开文件读 PNG 头（原每次 ~1.9 万次文件 IO）；
+  - 磁盘缓存命中不再解码原图：有尺寸（PNG 头）就能直接按缓存键取用缩放结果，原来即使缓存命中
+    也会先解码整张大图再查缓存（每次启动白解码 157+ 张大图）；
+  - Blockbench 模型 UV 约束检查提前到解码之前（语义不变）。
+  更新 mod 后若遇异常，删除 `versions\<版本>\texturescaler\cache` 目录即可强制重建。
 - **v1.0.1**：正式修复版（在 iGPU / GL_MAX_TEXTURE_SIZE=16384 的机器上实测通过，方块字消除）。
   在 v1.2.0 的 `listResources` 基础上补齐两处致命问题：
   - 图集拼接调用的是 `listResources("textures/block", ...)`（vanilla `atlases/blocks.json` 的
