@@ -27,6 +27,9 @@ public final class CoreSelfTest {
         testDownscaleSquare();
         testDownscaleTall();
         testSmallUntouched();
+        testAnimationInfo();
+        testDownscaleByDivisor();
+        testAnimationSafeListing();
         testModelScanner();
         testComputeCap();
         testTieredCaps();
@@ -78,6 +81,97 @@ public final class CoreSelfTest {
         }
         // a cap larger than the image -> untouched
         check("tall untouched at cap 4096", ImageDownscaler.downscale(png, 4096) == null);
+    }
+
+    private static void testAnimationInfo() throws Exception {
+        AnimationInfo bare = AnimationInfo.parse(
+                "{\"animation\":{\"frametime\":10}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        check("anim bare parsed", bare != null && bare.animated && !bare.explicitFrameSize);
+        AnimationInfo explicit = AnimationInfo.parse(
+                "{\"animation\":{\"width\":16,\"height\":16}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        check("anim explicit parsed", explicit != null && explicit.animated && explicit.explicitFrameSize);
+        check("anim absent section", AnimationInfo.parse("{\"pack\":{}}".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8)) == null);
+        check("anim garbage safe", AnimationInfo.parse(new byte[]{1, 2, 3}) == null);
+        check("anim empty safe", AnimationInfo.parse(new byte[0]) == null);
+
+        // smallest divisor that fits the cap; gcd(64, 11776) = 64 -> k = 4 gives 16x2944
+        check("safeDivisor 64x11776@4096", AnimationInfo.safeDivisor(64, 11776, 4096) == 4);
+        check("safeDivisor 62x11408@4096", AnimationInfo.safeDivisor(62, 11408, 4096) == 31);
+        check("safeDivisor 512x10240@4096", AnimationInfo.safeDivisor(512, 10240, 4096) == 4);
+        check("safeDivisor 64x1920@128", AnimationInfo.safeDivisor(64, 1920, 128) == 16);
+        check("safeDivisor coprime gives 1", AnimationInfo.safeDivisor(101, 103, 8) == 1);
+    }
+
+    private static void testDownscaleByDivisor() throws Exception {
+        byte[] strip = png(64, 11776);
+        ImageDownscaler.Result r = ImageDownscaler.downscaleByDivisor(strip, 4);
+        check("divisor result non-null", r != null);
+        if (r != null) {
+            check("divisor out 16x2944", r.outW == 16 && r.outH == 2944);
+            int[] out = PngInfo.read(r.png);
+            check("divisor encoded dims", out != null && out[0] == 16 && out[1] == 2944);
+            int frame = Math.min(16, 2944);
+            check("divisor frame count preserved (184)", (2944 / frame) * (16 / frame) == 184);
+        }
+        check("divisor rejects non-divisor", ImageDownscaler.downscaleByDivisor(strip, 3) == null);
+        check("divisor rejects 1", ImageDownscaler.downscaleByDivisor(strip, 1) == null);
+    }
+
+    /**
+     * End-to-end: an animated filmstrip must be divided evenly (never aspect-scaled), and a
+     * sidecar that pins its frame size must be left completely alone.
+     */
+    private static void testAnimationSafeListing() throws Exception {
+        Path gameDir = Files.createTempDirectory("ts-anim-test");
+        EnginePlatform platform = new EnginePlatform(gameDir);
+        platform.config.capOverride = 128;
+        platform.textures.put("ns:textures/block/anim.png", png(64, 1920));
+        platform.textures.put("ns:textures/block/anim.png.mcmeta",
+                "{\"animation\":{\"frametime\":10}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        platform.textures.put("ns:textures/block/pinned.png", png(1024, 1024));
+        platform.textures.put("ns:textures/block/pinned.png.mcmeta",
+                "{\"animation\":{\"width\":16,\"height\":16}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        platform.textures.put("ns:textures/block/plain.png", png(1024, 1024));
+
+        ScalerEngine engine = new ScalerEngine(platform);
+        engine.onReloadStart();
+        Map<String, byte[]> listed = engine.getListedScaled();
+
+        byte[] anim = listed.get("ns:textures/block/anim.png");
+        int[] animDims = anim == null ? null : PngInfo.read(anim);
+        // gcd(64, 1920) = 64; the smallest divisor reaching <= 128 is 16 -> 4x120 (30 frames of 4)
+        check("animated divided evenly", animDims != null && animDims[0] == 4 && animDims[1] == 120);
+        check("animated frame count preserved",
+                animDims != null && (animDims[1] / Math.min(animDims[0], animDims[1]))
+                        * (animDims[0] / Math.min(animDims[0], animDims[1])) == 30);
+
+        check("pinned frame size left alone", !listed.containsKey("ns:textures/block/pinned.png"));
+        byte[] plain = listed.get("ns:textures/block/plain.png");
+        int[] plainDims = plain == null ? null : PngInfo.read(plain);
+        check("plain still aspect scaled", plainDims != null && plainDims[0] == 128 && plainDims[1] == 128);
+
+        // the same rule must hold on the getResource path
+        check("getResource animated divided",
+                PngInfo.read(engine.getScaledResource("ns", "textures/block/anim.png"))[1] == 120);
+        check("getResource pinned untouched",
+                engine.getScaledResource("ns", "textures/block/pinned.png") == null);
+
+        // With the tier caps in force (no override) on a 4096 GPU, a filmstrip that already
+        // fits GL_MAX_TEXTURE_SIZE must be kept pixel-perfect instead of being ground down,
+        // because integer division is the only safe resize and its lattice is coarse.
+        Path gameDir2 = Files.createTempDirectory("ts-anim-fit");
+        EnginePlatform p2 = new EnginePlatform(gameDir2);
+        p2.textures.put("ns:textures/block/fits.png", png(64, 1920));
+        p2.textures.put("ns:textures/block/fits.png.mcmeta", "{\"animation\":{\"frametime\":10}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        p2.textures.put("ns:textures/block/toobig.png", png(64, 11776));
+        p2.textures.put("ns:textures/block/toobig.png.mcmeta", "{\"animation\":{\"frametime\":10}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        ScalerEngine engine2 = new ScalerEngine(p2);
+        engine2.onReloadStart();
+        Map<String, byte[]> listed2 = engine2.getListedScaled();
+        check("stitchable filmstrip kept pristine", !listed2.containsKey("ns:textures/block/fits.png"));
+        int[] tooBig = PngInfo.read(listed2.get("ns:textures/block/toobig.png"));
+        check("unstitchable filmstrip divided to 16x2944", tooBig != null && tooBig[0] == 16 && tooBig[1] == 2944);
     }
 
     private static void testSmallUntouched() throws Exception {

@@ -104,7 +104,14 @@ public final class ScalerEngine {
     private final AtomicLong statModelSkipped = new AtomicLong();
     private final AtomicLong statMissing = new AtomicLong();
     private final AtomicLong statFailed = new AtomicLong();
+    /** Animated filmstrips resized by an exact integer factor (frame grid preserved). */
+    private final AtomicLong statAnimDivided = new AtomicLong();
+    /** Animated filmstrips deliberately served untouched (already stitchable or not divisible). */
+    private final AtomicLong statAnimKept = new AtomicLong();
     private final AtomicLong sampled = new AtomicLong();
+
+    /** Per-reload memo of the {@code .mcmeta} probe; {@link AnimationInfo#NONE} = plain texture. */
+    private final Map<String, AnimationInfo> animationCache = new ConcurrentHashMap<String, AnimationInfo>();
 
     public ScalerEngine(ScalerPlatform platform) {
         this.platform = platform;
@@ -136,6 +143,7 @@ public final class ScalerEngine {
         scaledCache.clear();
         knownUntouched.clear();
         knownMissing.clear();
+        animationCache.clear();
         extraDirs = new ArrayList<String>(config().extraTextureDirs());
 
         updateCap();
@@ -167,9 +175,10 @@ public final class ScalerEngine {
     /** Logs the outcome of a reload after the reload barrier completes. */
     public void onReloadEnd() {
         log().info("[TextureScaler] reload finished: consulted {}, scaled {}, small {}, model-uv-skipped {}, "
-                        + "missing {}, failed {}",
+                        + "missing {}, failed {}, animated-divided {}, animated-kept {}",
                 statConsulted.get(), statScaled.get(), statSmall.get(),
-                statModelSkipped.get(), statMissing.get(), statFailed.get());
+                statModelSkipped.get(), statMissing.get(), statFailed.get(),
+                statAnimDivided.get(), statAnimKept.get());
     }
 
     private void resetStats() {
@@ -179,6 +188,8 @@ public final class ScalerEngine {
         statModelSkipped.set(0);
         statMissing.set(0);
         statFailed.set(0);
+        statAnimDivided.set(0);
+        statAnimKept.set(0);
     }
 
     private void sample(String key, String decision) {
@@ -552,8 +563,16 @@ public final class ScalerEngine {
             return null;
         }
 
+        int divisor = dims != null ? scaleDivisorFor(namespace, path, dims[0], dims[1], cap) : 1;
+        if (divisor == 0) {
+            statAnimKept.incrementAndGet();
+            sample(key, "animated-kept(cap " + cap + ")");
+            return null;
+        }
+        String variant = variantFor(divisor);
+
         if (dims != null) {
-            byte[] png = cache.get(namespace, path, dims[0], dims[1], cap);
+            byte[] png = cache.get(namespace, path, dims[0], dims[1], cap, variant);
             if (png != null) {
                 statScaled.incrementAndGet();
                 stats.fromCache++;
@@ -586,6 +605,77 @@ public final class ScalerEngine {
 
     // ---- scaling ----------------------------------------------------------
 
+    /** Reads (and memoises for this reload) the {@code .png.mcmeta} sidecar of one texture. */
+    private AnimationInfo animationOf(String namespace, String path) {
+        String key = key(namespace, path);
+        AnimationInfo known = animationCache.get(key);
+        if (known != null) {
+            return known;
+        }
+        AnimationInfo info = AnimationInfo.NONE;
+        try {
+            AnimationInfo parsed = AnimationInfo.parse(platform.readOriginal(namespace, path + ".mcmeta"));
+            if (parsed != null) {
+                info = parsed;
+            }
+        } catch (Exception ignored) {
+            // Unreadable sidecar — treat the texture as static and scale it normally.
+        }
+        animationCache.put(key, info);
+        return info;
+    }
+
+    /**
+     * How one oversized texture must be resized.
+     *
+     * @return {@code 1} for the ordinary aspect-preserving resize to {@code cap};
+     *         {@code >= 2} for an exact integer divide (the only resize that keeps a
+     *         vanilla animation filmstrip's frame grid intact); {@code 0} when the texture
+     *         must be left untouched because no safe resize exists.
+     */
+    private int scaleDivisorFor(String namespace, String path, int w, int h, int cap) {
+        if (w <= 0 || h <= 0) {
+            return 1;
+        }
+        AnimationInfo anim = animationOf(namespace, path);
+        if (!anim.animated) {
+            return 1;
+        }
+        if (anim.explicitFrameSize) {
+            // Vanilla uses the sidecar's pixel frame size verbatim, so resizing the PNG
+            // without re-emitting a patched sidecar would shear the frames. Leave it alone.
+            return 0;
+        }
+        // An animated strip may only be divided by an integer factor, and that lattice is
+        // coarse (62x11408 has just {2, 31, 62}, so the quality cap would force 2x368).
+        // Shrink it only as far as the stitcher physically requires - a sprite taller than
+        // GL_MAX_TEXTURE_SIZE cannot be stitched at all, which is the actual crash - and
+        // otherwise keep the frames pristine.
+        ScalerConfig cfg = config();
+        int gpu = detectedGpuMaxTextureSize;
+        int limit;
+        if (cfg.capOverride > 0) {
+            // An explicit user cap is a directive, not a suggestion: obey it verbatim.
+            limit = cfg.capOverride;
+        } else if (gpu > 0) {
+            if (Math.max(w, h) <= gpu) {
+                return 0;
+            }
+            limit = gpu;
+        } else {
+            // GL has not answered yet, so the hard limit is unknown: stay conservative and
+            // fall back to the (much smaller) tier cap rather than risk an unstitchable sprite.
+            limit = cap;
+        }
+        int k = AnimationInfo.safeDivisor(w, h, limit);
+        return k < 2 ? 0 : k;
+    }
+
+    /** Disk-cache discriminator for the selected resize policy ("" = aspect-preserving). */
+    private static String variantFor(int divisor) {
+        return divisor > 1 ? "k" + divisor : "";
+    }
+
     private byte[] scaleIfNeeded(String namespace, String path, byte[] original) {
         int[] dims = PngInfo.read(original);
         int cap = dims != null ? capFor(dims[0], dims[1]) : currentCap;
@@ -605,8 +695,19 @@ public final class ScalerEngine {
             return null;
         }
 
+        int divisor = dims != null ? scaleDivisorFor(namespace, path, dims[0], dims[1], cap) : 1;
+        if (divisor == 0) {
+            // Animated filmstrip that must not be resized: serving the original keeps the
+            // frame grid intact, whereas any non-integer resize renders as a smear.
+            knownUntouched.add(key(namespace, path));
+            statAnimKept.incrementAndGet();
+            sample(key(namespace, path), "animated-kept(cap " + cap + ")");
+            return null;
+        }
+        String variant = variantFor(divisor);
+
         if (dims != null) {
-            byte[] png = cache.get(namespace, path, dims[0], dims[1], cap);
+            byte[] png = cache.get(namespace, path, dims[0], dims[1], cap, variant);
             if (png != null) {
                 return png;
             }
@@ -614,7 +715,9 @@ public final class ScalerEngine {
 
         ImageDownscaler.Result result;
         try {
-            result = ImageDownscaler.downscale(original, cap);
+            result = divisor > 1
+                    ? ImageDownscaler.downscaleByDivisor(original, divisor)
+                    : ImageDownscaler.downscale(original, cap);
         } catch (Throwable t) {
             result = null;
         }
@@ -624,7 +727,10 @@ public final class ScalerEngine {
             sample(key(namespace, path), "unchanged/unsupported");
             return null;
         }
-        cache.put(namespace, path, result.srcW, result.srcH, cap, result.png);
+        if (divisor > 1) {
+            statAnimDivided.incrementAndGet();
+        }
+        cache.put(namespace, path, result.srcW, result.srcH, cap, variant, result.png);
         return result.png;
     }
 

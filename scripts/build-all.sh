@@ -6,6 +6,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 dist="$root/dist"
 mkdir -p "$dist"
 
+# Only collect the jars of the current mod version, so leftovers from earlier
+# builds in build/libs can never leak an obsolete jar into dist/.
+modVersion="$(sed -n 's/^[[:space:]]*mod_version[[:space:]]*=[[:space:]]*//p' "$root/gradle/mod.properties" | tr -d '\r' | head -n1)"
+
 modules=(
   "versions/1.12.2/forge:17"
   "versions/1.16.5/forge:17"
@@ -16,7 +20,7 @@ modules=(
   "versions/1.19.2/fabric:21"
   "versions/1.20.1/forge:17"
   "versions/1.20.1/fabric:21"
-  "versions/1.21.1/forge:17"
+  "versions/1.21.1/forge:21"
   "versions/1.21.1/fabric:21"
   "versions/1.21.1/neoforge:21"
   "versions/1.21.4/fabric:21"
@@ -43,7 +47,7 @@ for entry in "${modules[@]}"; do
   ( cd "$dir" && JAVA_HOME="$jdk" PATH="$jdk/bin:$PATH" ./gradlew build --no-daemon --console=plain )
   code=$?
   if [ "$code" -eq 0 ]; then
-    find "$dir/build/libs" -maxdepth 1 -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' ! -name '*dev*' \
+    find "$dir/build/libs" -maxdepth 1 -name "*-$modVersion.jar" ! -name '*sources*' ! -name '*javadoc*' ! -name '*dev*' \
       -exec cp {} "$dist/" \; 2>/dev/null
   else
     echo "FAILED: $rel (exit $code)"

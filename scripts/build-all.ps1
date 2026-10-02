@@ -11,6 +11,11 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
+# Only collect the jars of the current mod version, so leftovers from earlier
+# builds in build/libs can never leak an obsolete jar into dist/.
+$modVersion = ((Get-Content (Join-Path $root 'gradle\mod.properties') |
+        Where-Object { $_ -match '^\s*mod_version\s*=' }) -replace '^\s*mod_version\s*=\s*', '').Trim()
+
 # module path -> JDK major version used to *run* Gradle
 $modules = [ordered]@{
     'versions/1.12.2/forge'  = 17
@@ -57,7 +62,7 @@ foreach ($rel in $modules.Keys) {
         Pop-Location
     }
 
-    $jars = @(Get-ChildItem (Join-Path $dir 'build\libs') -Filter '*.jar' -ErrorAction SilentlyContinue |
+    $jars = @(Get-ChildItem (Join-Path $dir 'build\libs') -Filter "*-$modVersion.jar" -ErrorAction SilentlyContinue |
               Where-Object { $_.Name -notmatch 'sources|javadoc|dev' })
     if ($code -eq 0 -and $jars.Count -gt 0) {
         foreach ($j in $jars) { Copy-Item $j.FullName (Join-Path $dist $j.Name) -Force }

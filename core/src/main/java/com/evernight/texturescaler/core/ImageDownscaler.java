@@ -48,6 +48,9 @@ public final class ImageDownscaler {
      * Downscales {@code original} so that its largest edge becomes {@code cap}, preserving
      * the aspect ratio. Returns {@code null} when the image is already small enough or
      * cannot be decoded (the caller then leaves the texture untouched).
+     *
+     * <p>Only safe for textures <b>without</b> an animation sidecar; see
+     * {@link #downscaleByDivisor(byte[], int)} for filmstrips.</p>
      */
     public static Result downscale(byte[] original, int cap) {
         if (original == null || cap <= 0) {
@@ -57,17 +60,7 @@ public final class ImageDownscaler {
         if (header != null && Math.max(header[0], header[1]) <= cap) {
             return null;
         }
-        BufferedImage src;
-        try {
-            // Never spill to temp files: the client is on the render/worker thread and the
-            // images can be tens of MB.
-            ImageIO.setUseCache(false);
-            src = ImageIO.read(new ByteArrayInputStream(original));
-        } catch (IOException e) {
-            return null;
-        } catch (RuntimeException e) {
-            return null;
-        }
+        BufferedImage src = decode(original);
         if (src == null) {
             return null;
         }
@@ -79,14 +72,61 @@ public final class ImageDownscaler {
         }
         int newW = Math.max(1, (int) Math.round((long) w * cap / maxEdge));
         int newH = Math.max(1, (int) Math.round((long) h * cap / maxEdge));
+        return encode(src, w, h, newW, newH);
+    }
 
+    /**
+     * Downscales by an exact integer {@code divisor}, i.e. {@code newW = w / divisor} and
+     * {@code newH = h / divisor}.
+     *
+     * <p>This is the only resize that keeps a vanilla animation filmstrip intact: both
+     * edges shrink by the same rational factor, so the frame size
+     * ({@code min(w, h) / divisor} for a sidecar without an explicit frame size) and the
+     * frame count are preserved exactly.</p>
+     *
+     * @return the scaled result, or {@code null} when {@code divisor < 2}, the image cannot
+     *         be decoded, or the divisor does not divide both edges
+     */
+    public static Result downscaleByDivisor(byte[] original, int divisor) {
+        if (original == null || divisor < 2) {
+            return null;
+        }
+        BufferedImage src = decode(original);
+        if (src == null) {
+            return null;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0 || w % divisor != 0 || h % divisor != 0) {
+            return null;
+        }
+        return encode(src, w, h, w / divisor, h / divisor);
+    }
+
+    private static BufferedImage decode(byte[] original) {
+        try {
+            // Never spill to temp files: the client is on the render/worker thread and the
+            // images can be tens of MB.
+            ImageIO.setUseCache(false);
+            return ImageIO.read(new ByteArrayInputStream(original));
+        } catch (IOException e) {
+            return null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static Result encode(BufferedImage src, int srcW, int srcH, int newW, int newH) {
+        if (newW < 1 || newH < 1) {
+            return null;
+        }
         BufferedImage out = progressiveScale(src, newW, newH);
         try {
             ByteArrayOutputStream bos = new ByteArrayOutputStream(Math.max(4096, newW * newH));
             if (!ImageIO.write(out, "png", bos)) {
                 return null;
             }
-            return new Result(bos.toByteArray(), w, h, newW, newH);
+            return new Result(bos.toByteArray(), srcW, srcH, newW, newH);
         } catch (IOException e) {
             return null;
         }

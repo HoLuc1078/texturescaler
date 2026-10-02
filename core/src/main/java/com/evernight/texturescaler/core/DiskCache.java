@@ -135,10 +135,19 @@ public final class DiskCache {
 
     /** Read a cached entry, or {@code null} when absent/corrupt. */
     public byte[] get(String namespace, String path, int srcW, int srcH, int cap) {
+        return get(namespace, path, srcW, srcH, cap, "");
+    }
+
+    /**
+     * Variant-aware read: {@code variant} distinguishes two different resize results for the
+     * same original size and cap (e.g. {@code "k4"} for an animation-safe integer divide),
+     * so a stale entry can never be served for the other policy.
+     */
+    public byte[] get(String namespace, String path, int srcW, int srcH, int cap, String variant) {
         if (!config().diskCacheEnabled) {
             return null;
         }
-        Path file = fileFor(namespace, path, srcW, srcH, cap);
+        Path file = fileFor(namespace, path, srcW, srcH, cap, variant);
         if (!Files.isRegularFile(file)) {
             return null;
         }
@@ -153,11 +162,16 @@ public final class DiskCache {
 
     /** Store an entry (best effort, atomic rename). */
     public void put(String namespace, String path, int srcW, int srcH, int cap, byte[] png) {
+        put(namespace, path, srcW, srcH, cap, "", png);
+    }
+
+    /** Variant-aware store; see {@link #get(String, String, int, int, int, String)}. */
+    public void put(String namespace, String path, int srcW, int srcH, int cap, String variant, byte[] png) {
         if (!config().diskCacheEnabled) {
             return;
         }
         try {
-            Path target = fileFor(namespace, path, srcW, srcH, cap);
+            Path target = fileFor(namespace, path, srcW, srcH, cap, variant);
             Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
             try (OutputStream out = Files.newOutputStream(tmp)) {
                 out.write(png);
@@ -168,8 +182,9 @@ public final class DiskCache {
         }
     }
 
-    private Path fileFor(String namespace, String path, int srcW, int srcH, int cap) {
-        String key = namespace + ":" + path + "|" + srcW + "x" + srcH + "|" + cap;
+    private Path fileFor(String namespace, String path, int srcW, int srcH, int cap, String variant) {
+        String key = namespace + ":" + path + "|" + srcW + "x" + srcH + "|" + cap
+                + (variant == null || variant.isEmpty() ? "" : "|" + variant);
         return dir().resolve(sha256(key) + ".png");
     }
 
