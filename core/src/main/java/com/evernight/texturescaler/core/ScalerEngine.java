@@ -44,6 +44,15 @@ public final class ScalerEngine {
 
     private volatile int currentCap = 512;
 
+    /** Cap applied to textures whose longest edge exceeds the detail threshold. */
+    private volatile int currentDetailCap = 2048;
+
+    /** Cap applied to extreme-aspect ("strip") textures. */
+    private volatile int currentStripCap = 4096;
+
+    /** Identity of the cap policy; the persisted size manifest is only reused when it matches. */
+    private volatile String currentPolicyId = "unresolved";
+
     /** Latched result of the first successful GPU query; 0 = not known yet. */
     private volatile int detectedGpuMaxTextureSize = 0;
 
@@ -78,8 +87,8 @@ public final class ScalerEngine {
     private final Object listingLock = new Object();
     private volatile Set<String> lastListedPaths = Collections.emptySet();
     private volatile String lastPackFingerprint = null;
-    /** Cap the cached listing was computed with; reuse is only valid when it is unchanged. */
-    private volatile int lastListingCap = -1;
+    /** Cap policy the cached listing was computed with; reuse is only valid when it is unchanged. */
+    private volatile String lastListingPolicy = null;
     private volatile boolean incrementalPending = false;
 
     /** Re-entrancy guard for the nested manager listing inside our own listing. */
@@ -132,7 +141,7 @@ public final class ScalerEngine {
         updateCap();
 
         String fp = platform.packFingerprint();
-        boolean sameCap = currentCap == lastListingCap;
+        boolean sameCap = currentPolicyId.equals(lastListingPolicy);
         if (fp != null && fp.equals(lastPackFingerprint) && sameCap && !listedScaled.isEmpty()) {
             incrementalPending = true;
             log().info("[TextureScaler] pack list and cap unchanged, reusing previous atlas scan, "
@@ -149,8 +158,10 @@ public final class ScalerEngine {
         if (ns != null && !ns.isEmpty()) {
             claimedNamespaces = ns;
         }
-        log().info("[TextureScaler] resource reload started: cap = {}, {} namespaces claimed",
-                currentCap, claimedNamespaces == null ? 0 : claimedNamespaces.size());
+        log().info("[TextureScaler] resource reload started: caps normal {}, detail {}, strip {}, "
+                        + "{} namespaces claimed",
+                currentCap, currentDetailCap, currentStripCap,
+                claimedNamespaces == null ? 0 : claimedNamespaces.size());
     }
 
     /** Logs the outcome of a reload after the reload barrier completes. */
@@ -200,9 +211,14 @@ public final class ScalerEngine {
     }
 
     /**
-     * Recomputes the scaling cap. The first positive GPU value is <b>latched</b>, so a later
-     * unsuccessful query (background thread, config event before the window exists) can never
-     * downgrade a known GPU value to the fallback. Retried on every resource reload.
+     * Recomputes the scaling cap.
+     *
+     * <p>Safe to call from anywhere, including a mod initializer that runs inside the
+     * Minecraft constructor: querying the GPU is delegated to the platform, which returns
+     * {@code <= 0} rather than touching GL before the render backend is initialized. The
+     * first positive result is <b>latched</b>, so a later unsuccessful query (background
+     * thread, config event before the window exists) can never downgrade a known GPU value
+     * to the fallback. The value is retried on every resource reload until it is known.</p>
      */
     public void updateCap() {
         int gpu = detectedGpuMaxTextureSize;
@@ -218,24 +234,68 @@ public final class ScalerEngine {
                 detectedGpuMaxTextureSize = queried;
             }
         }
-        int cap = config().computeCap(gpu);
-        boolean changed = cap != currentCap;
-        currentCap = cap;
+        ScalerConfig cfg = config();
+        int normal;
+        int detail;
+        int strip;
+        if (cfg.capOverride > 0) {
+            // A manual override is deliberately uniform: every texture gets the same cap.
+            normal = cfg.capOverride;
+            detail = cfg.capOverride;
+            strip = cfg.capOverride;
+        } else if (cfg.tieredCaps) {
+            normal = cfg.computeNormalCap(gpu);
+            detail = cfg.computeDetailCap(gpu);
+            strip = cfg.computeStripCap(gpu);
+        } else {
+            normal = cfg.computeCap(gpu);
+            detail = normal;
+            strip = normal;
+        }
+        boolean changed = normal != currentCap || detail != currentDetailCap || strip != currentStripCap;
+        currentCap = normal;
+        currentDetailCap = detail;
+        currentStripCap = strip;
+        currentPolicyId = normal + "/" + detail + "/" + strip
+                + (cfg.tieredCaps ? "|t" : "|f") + "|" + cfg.capOverride;
         if (changed || !capResolved) {
             capResolved = true;
-            if (config().capOverride > 0) {
-                log().info("[TextureScaler] GPU max texture size detected: {} (manual capOverride {}, scaling cap = {})",
-                        gpu, cap, cap);
+            if (cfg.capOverride > 0) {
+                log().info("[TextureScaler] GPU max texture size detected: {} "
+                                + "(manual capOverride {}, uniform scaling cap = {})",
+                        gpu, cfg.capOverride, normal);
+            } else if (gpu > 0 && cfg.tieredCaps) {
+                log().info("[TextureScaler] GPU max texture size detected: {} -> caps: normal {}, "
+                                + "detail {} (edge > {}), strip {} (aspect >= {}:1)",
+                        gpu, normal, detail, cfg.detailThreshold, strip, cfg.stripAspectRatio);
             } else if (gpu > 0) {
-                log().info("[TextureScaler] GPU max texture size detected: {} -> scaling cap = {}", gpu, cap);
+                log().info("[TextureScaler] GPU max texture size detected: {} -> scaling cap = {}", gpu, normal);
+            } else if (cfg.tieredCaps) {
+                log().warn("[TextureScaler] could not query GL_MAX_TEXTURE_SIZE, using fallback caps: "
+                                + "normal {}, detail {}, strip {}", normal, detail, strip);
             } else {
-                log().warn("[TextureScaler] could not query GL_MAX_TEXTURE_SIZE, using fallback scaling cap = {}", cap);
+                log().warn("[TextureScaler] could not query GL_MAX_TEXTURE_SIZE, using fallback scaling cap = {}", normal);
             }
         }
     }
 
     public int currentCap() {
         return currentCap;
+    }
+
+    /** Cap used for textures whose longest edge exceeds the detail threshold. */
+    public int currentDetailCap() {
+        return currentDetailCap;
+    }
+
+    /** Cap used for extreme-aspect ("strip") textures. */
+    public int currentStripCap() {
+        return currentStripCap;
+    }
+
+    /** The cap that will be applied to a texture of this original size. */
+    public int capFor(int textureW, int textureH) {
+        return config().capFor(detectedGpuMaxTextureSize, textureW, textureH);
     }
 
     /** The latched {@code GL_MAX_TEXTURE_SIZE} reported by the platform; 0 = unknown. */
@@ -364,7 +424,7 @@ public final class ScalerEngine {
                     if (all == null) {
                         all = Collections.emptyList();
                     }
-                    Map<String, int[]> knownSizes = cache.loadSizeManifest(currentCap);
+                    Map<String, int[]> knownSizes = cache.loadSizeManifest(currentPolicyId);
                     ListingStats stats = new ListingStats();
                     for (TextureHandle h : all) {
                         byte[] scaled = processForListing(h, knownSizes, stats);
@@ -373,7 +433,7 @@ public final class ScalerEngine {
                         }
                     }
                     if (stats.manifestNew > 0) {
-                        cache.saveSizeManifest(currentCap, knownSizes);
+                        cache.saveSizeManifest(currentPolicyId, knownSizes);
                     }
                     Set<String> covered = new HashSet<String>();
                     for (TextureHandle h : all) {
@@ -393,7 +453,7 @@ public final class ScalerEngine {
             }
             listedScaled = result;
             listingComputed = true;
-            lastListingCap = currentCap;
+            lastListingPolicy = currentPolicyId;
         }
     }
 
@@ -421,7 +481,7 @@ public final class ScalerEngine {
                     }
                 }
 
-                Map<String, int[]> knownSizes = cache.loadSizeManifest(currentCap);
+                Map<String, int[]> knownSizes = cache.loadSizeManifest(currentPolicyId);
                 ListingStats stats = new ListingStats();
                 int added = 0;
                 for (TextureHandle h : all) {
@@ -436,11 +496,11 @@ public final class ScalerEngine {
                     }
                 }
                 if (stats.manifestNew > 0) {
-                    cache.saveSizeManifest(currentCap, knownSizes);
+                    cache.saveSizeManifest(currentPolicyId, knownSizes);
                 }
                 lastListedPaths = currentKeys;
                 listedScaled = merged;
-                lastListingCap = currentCap;
+                lastListingPolicy = currentPolicyId;
                 log().info("[TextureScaler] atlas scan (incremental): {} textures listed, "
                                 + "{} new textures checked, {} added ({} from cache) in {} ms",
                         all.size(), stats.eligible, added, stats.fromCache,
@@ -477,7 +537,8 @@ public final class ScalerEngine {
                 stats.manifestNew++;
             }
         }
-        if (dims != null && Math.max(dims[0], dims[1]) <= currentCap) {
+        int cap = dims != null ? capFor(dims[0], dims[1]) : currentCap;
+        if (dims != null && Math.max(dims[0], dims[1]) <= cap) {
             statSmall.incrementAndGet();
             sample(key, "small");
             return null;
@@ -485,18 +546,18 @@ public final class ScalerEngine {
 
         int modelSize = modelUvConstraints.containsKey(spriteKey(namespace, path))
                 ? modelUvConstraints.get(spriteKey(namespace, path)) : 0;
-        if (modelSize > currentCap) {
+        if (modelSize > cap) {
             statModelSkipped.incrementAndGet();
-            sample(key, "model-uv-skip(" + modelSize + ")");
+            sample(key, "model-uv-skip(" + modelSize + " > " + cap + ")");
             return null;
         }
 
         if (dims != null) {
-            byte[] png = cache.get(namespace, path, dims[0], dims[1], currentCap);
+            byte[] png = cache.get(namespace, path, dims[0], dims[1], cap);
             if (png != null) {
                 statScaled.incrementAndGet();
                 stats.fromCache++;
-                sample(key, "scaled(cached)");
+                sample(key, "scaled(cached cap " + cap + ")");
                 return png;
             }
         }
@@ -512,7 +573,7 @@ public final class ScalerEngine {
         byte[] scaled = scaleIfNeeded(namespace, path, original);
         if (scaled != null) {
             statScaled.incrementAndGet();
-            sample(key, "scaled");
+            sample(key, "scaled(cap " + cap + ")");
         }
         return scaled;
     }
@@ -526,8 +587,8 @@ public final class ScalerEngine {
     // ---- scaling ----------------------------------------------------------
 
     private byte[] scaleIfNeeded(String namespace, String path, byte[] original) {
-        int cap = currentCap;
         int[] dims = PngInfo.read(original);
+        int cap = dims != null ? capFor(dims[0], dims[1]) : currentCap;
         if (dims != null && Math.max(dims[0], dims[1]) <= cap) {
             knownUntouched.add(key(namespace, path));
             statSmall.incrementAndGet();
@@ -540,7 +601,7 @@ public final class ScalerEngine {
         if (modelSize > cap) {
             knownUntouched.add(key(namespace, path));
             statModelSkipped.incrementAndGet();
-            sample(key(namespace, path), "model-uv-skip(" + modelSize + ")");
+            sample(key(namespace, path), "model-uv-skip(" + modelSize + " > " + cap + ")");
             return null;
         }
 

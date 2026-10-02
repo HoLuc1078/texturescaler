@@ -71,9 +71,9 @@ public final class DiskCache {
 
     /**
      * Loads the persisted "texture path -> [w, h]" manifest, or an empty map when absent,
-     * corrupt, or built for a different cap.
+     * corrupt, or built for a different cap policy.
      */
-    public Map<String, int[]> loadSizeManifest(int cap) {
+    public Map<String, int[]> loadSizeManifest(String policy) {
         Map<String, int[]> result = new HashMap<String, int[]>();
         if (!config().diskCacheEnabled) {
             return result;
@@ -87,7 +87,7 @@ public final class DiskCache {
             // only exists since Gson 2.8.6, while Minecraft 1.12.2/1.16.5 ship Gson 2.8.0.
             @SuppressWarnings("deprecation")
             JsonObject root = new JsonParser().parse(reader).getAsJsonObject();
-            if (!root.has("cap") || root.get("cap").getAsInt() != cap) {
+            if (policy == null || !root.has("policy") || !policy.equals(root.get("policy").getAsString())) {
                 return result;
             }
             JsonObject files = root.has("files") ? root.getAsJsonObject("files") : null;
@@ -107,7 +107,7 @@ public final class DiskCache {
     }
 
     /** Persists the "texture path -> [w, h]" manifest (best effort, atomic rename). */
-    public void saveSizeManifest(int cap, Map<String, int[]> sizes) {
+    public void saveSizeManifest(String policy, Map<String, int[]> sizes) {
         if (!config().diskCacheEnabled) {
             return;
         }
@@ -119,7 +119,7 @@ public final class DiskCache {
             files.add(e.getKey(), a);
         }
         JsonObject root = new JsonObject();
-        root.addProperty("cap", cap);
+        root.addProperty("policy", policy == null ? "" : policy);
         root.add("files", files);
         try {
             Path target = dir().resolve(SIZES_FILE);

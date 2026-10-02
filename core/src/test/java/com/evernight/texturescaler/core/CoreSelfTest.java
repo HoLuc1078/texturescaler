@@ -29,6 +29,8 @@ public final class CoreSelfTest {
         testSmallUntouched();
         testModelScanner();
         testComputeCap();
+        testTieredCaps();
+        testCapLatching();
         testDiskCache();
         testEngineListing();
         if (failures == 0) {
@@ -207,6 +209,104 @@ public final class CoreSelfTest {
         check("cap override wins", c.computeCap(16384) == 768);
     }
 
+    /**
+     * The single flat cap destroyed two kinds of texture: big "display" sheets (4096 ->
+     * 512 is an 8x reduction) and extreme-aspect strips (64x11776 -> 3x512). The tiers
+     * spend the same atlas budget where it is actually visible.
+     */
+    private static void testTieredCaps() {
+        ScalerConfig c = new ScalerConfig();
+        check("normal 16384 -> 256", c.computeNormalCap(16384) == 256);
+        check("detail 16384 -> 2048", c.computeDetailCap(16384) == 2048);
+        check("strip 16384 -> 4096", c.computeStripCap(16384) == 4096);
+        check("normal 32768 -> 512", c.computeNormalCap(32768) == 512);
+        check("detail 32768 -> 4096", c.computeDetailCap(32768) == 4096);
+        check("caps fall back to 16384 while GL is silent",
+                c.computeNormalCap(0) == 256 && c.computeDetailCap(0) == 2048);
+
+        check("ordinary 256 texture -> normal cap", c.capFor(16384, 256, 256) == 256);
+        check("512 texture -> normal cap", c.capFor(16384, 512, 512) == 256);
+        check("1024 texture -> normal cap", c.capFor(16384, 1024, 1024) == 256);
+        check("4096 sheet -> detail cap", c.capFor(16384, 4096, 4096) == 2048);
+        check("2048 sheet -> detail cap", c.capFor(16384, 2048, 2048) == 2048);
+        check("64x11776 strip -> strip cap", c.capFor(16384, 64, 11776) == 4096);
+        check("512x10240 strip -> strip cap", c.capFor(16384, 512, 10240) == 4096);
+        check("2048x2048 is not a strip", !c.isStrip(2048, 2048));
+        check("64x11776 is a strip", c.isStrip(64, 11776));
+
+        c.capOverride = 320;
+        check("capOverride beats the tiers", c.capFor(16384, 4096, 4096) == 320
+                && c.capFor(16384, 64, 11776) == 320);
+
+        ScalerConfig legacy = new ScalerConfig();
+        legacy.capOverride = 0;
+        legacy.tieredCaps = false;
+        check("tiering off reproduces the old single cap", legacy.capFor(16384, 4096, 4096) == 512
+                && legacy.capFor(16384, 64, 11776) == 512);
+    }
+
+    /**
+     * The GL query is only valid once the render backend exists, so callers may hit the
+     * engine before a value is available. The cap must fall back, be latched once known,
+     * never be downgraded by a later failed query, and honour {@code capOverride} without
+     * any GPU knowledge at all.
+     */
+    private static void testCapLatching() {
+        ScalerConfig config = new ScalerConfig();
+        CapPlatform platform = new CapPlatform(config);
+        ScalerEngine engine = new ScalerEngine(platform);
+
+        // Not ready yet (mod initializer inside the Minecraft constructor).
+        platform.gpu = 0;
+        engine.updateCap();
+        check("cap falls back while GL is not ready", engine.currentCap() == 256);
+        check("unknown GPU is queried once", platform.calls == 1);
+
+        // First successful reload -> real value is used and latched.
+        platform.gpu = 8192;
+        engine.updateCap();
+        check("cap upgrades once detected", engine.currentCap() == 256);
+        check("gpu value is latched", engine.detectedGpuMaxTextureSize() == 8192);
+
+        // Later failed query (background thread / config event) must not downgrade.
+        platform.gpu = 0;
+        engine.updateCap();
+        check("no re-query once detected", platform.calls == 2);
+        check("failed re-query cannot downgrade the cap", engine.currentCap() == 256);
+
+        // capOverride still wins, still without querying.
+        config.capOverride = 128;
+        engine.updateCap();
+        check("capOverride wins", engine.currentCap() == 128 && platform.calls == 2);
+
+        // Override with no GPU knowledge at all: still resolved, still no query needed.
+        CapPlatform bare = new CapPlatform(new ScalerConfig());
+        bare.config.capOverride = 64;
+        ScalerEngine bareEngine = new ScalerEngine(bare);
+        bareEngine.updateCap();
+        check("override resolves with unknown GPU", bareEngine.currentCap() == 64);
+    }
+
+    private static final class CapPlatform implements ScalerPlatform {
+        final ScalerConfig config;
+        int gpu;
+        int calls;
+
+        CapPlatform(ScalerConfig config) {
+            this.config = config;
+        }
+
+        @Override public ScalerLog log() { return ScalerLog.NOOP; }
+        @Override public ScalerConfig config() { return config; }
+        @Override public Path gameDirectory() { return java.nio.file.Paths.get("."); }
+        @Override public int gpuMaxTextureSize() { calls++; return gpu; }
+        @Override public List<TextureHandle> listAllTextures() { return Collections.emptyList(); }
+        @Override public Map<String, String> listModels() { return Collections.emptyMap(); }
+        @Override public byte[] readOriginal(String namespace, String path) { return null; }
+        @Override public Set<String> claimedNamespaces() { return Collections.emptySet(); }
+        @Override public String packFingerprint() { return "cap"; }
+    }
+
     private static void testDiskCache() throws Exception {
         Path gameDir = Files.createTempDirectory("ts-cache-test");
         StubPlatform platform = new StubPlatform(gameDir);
@@ -222,11 +322,11 @@ public final class CoreSelfTest {
 
         Map<String, int[]> sizes = new HashMap<String, int[]>();
         sizes.put("ns:textures/block/a.png", new int[]{1024, 1024});
-        cache.saveSizeManifest(512, sizes);
-        Map<String, int[]> loaded = cache.loadSizeManifest(512);
+        cache.saveSizeManifest("256/2048/4096", sizes);
+        Map<String, int[]> loaded = cache.loadSizeManifest("256/2048/4096");
         check("manifest roundtrip", loaded.size() == 1
                 && loaded.get("ns:textures/block/a.png")[0] == 1024);
-        check("manifest rejects other cap", cache.loadSizeManifest(256).isEmpty());
+        check("manifest rejects other policy", cache.loadSizeManifest("512/512/512").isEmpty());
     }
 
     private static final class StubPlatform implements ScalerPlatform {
