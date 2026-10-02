@@ -1,9 +1,8 @@
 # Build every version/loader module and collect the jars into dist/
-# Usage:  pwsh -File scripts/build-all.ps1 [-Only 1.20.1,1.21.1] [-SkipLegacy]
+# Usage:  powershell -File scripts/build-all.ps1 [-Only 1.20.1,1.21.1]
 [CmdletBinding()]
 param(
-    [string[]] $Only,
-    [switch]   $SkipLegacy
+    [string[]] $Only
 )
 
 $ErrorActionPreference = 'Continue'
@@ -16,41 +15,34 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 $modVersion = ((Get-Content (Join-Path $root 'gradle\mod.properties') |
         Where-Object { $_ -match '^\s*mod_version\s*=' }) -replace '^\s*mod_version\s*=\s*', '').Trim()
 
-# module path -> JDK major version used to *run* Gradle
-$modules = [ordered]@{
-    'versions/1.12.2/forge'  = 17
-    'versions/1.16.5/forge'  = 17
-    'versions/1.16.5/fabric' = 21
-    'versions/1.18.2/forge'  = 17
-    'versions/1.18.2/fabric' = 21
-    'versions/1.19.2/forge'  = 17
-    'versions/1.19.2/fabric' = 21
-    'versions/1.20.1/forge'  = 17
-    'versions/1.20.1/fabric' = 21
-    'versions/1.21.1/forge'  = 21
-    'versions/1.21.1/fabric' = 21
-    'versions/1.21.1/neoforge' = 21
-    'versions/1.21.4/fabric' = 21
-    'versions/1.21.4/neoforge' = 21
-}
+# Every module declares, in its own gradle.properties, the JDK that runs its Gradle
+# wrapper (`gradle_jdk`). 21 is the fallback for a module that omits it.
+$modules = Get-ChildItem (Join-Path $root 'versions') -Directory | ForEach-Object {
+    $mc = $_.Name
+    Get-ChildItem $_.FullName -Directory | ForEach-Object {
+        $rel = "versions/$mc/$($_.Name)"
+        $jdk = 21
+        $decl = (Get-Content (Join-Path $_.FullName 'gradle.properties') -ErrorAction SilentlyContinue) |
+                Where-Object { $_ -match '^\s*gradle_jdk\s*=' }
+        if ($decl) { $jdk = [int]($decl -replace '^\s*gradle_jdk\s*=\s*', '') }
+        [pscustomobject]@{ Path = $rel; Jdk = $jdk }
+    }
+} | Where-Object { Test-Path (Join-Path $root "$($_.Path)\gradlew.bat") } | Sort-Object Path
 
 $results = @()
-foreach ($rel in $modules.Keys) {
-    if ($Only -and -not ($Only | Where-Object { $rel -like "*/$_/*" -or $rel -like "*/$_" })) { continue }
-    if ($SkipLegacy -and $rel -like '*1.12.2*') { continue }
+foreach ($module in $modules) {
+    $rel = $module.Path
+    if ($Only -and -not ($Only | Where-Object { $rel -like "*/$_/*" })) { continue }
 
     $dir = Join-Path $root $rel
-    if (-not (Test-Path $dir)) { Write-Host "skip (missing): $rel" -ForegroundColor DarkGray; continue }
-
-    $jdkMajor = $modules[$rel]
-    $jdk = Join-Path $env:USERPROFILE ".jdks\temurin-$jdkMajor"
+    $jdk = Join-Path $env:USERPROFILE ".jdks\temurin-$($module.Jdk)"
     if (-not (Test-Path (Join-Path $jdk 'bin\java.exe'))) {
         $jdk = (Get-ChildItem (Join-Path $env:USERPROFILE '.jdks') -Directory |
                 Where-Object { Test-Path (Join-Path $_.FullName 'bin\java.exe') } |
                 Select-Object -First 1).FullName
     }
 
-    Write-Host "=== building $rel (JDK $jdkMajor) ===" -ForegroundColor Cyan
+    Write-Host "=== building $rel (JDK $($module.Jdk)) ===" -ForegroundColor Cyan
     $env:JAVA_HOME = $jdk
     $env:PATH = "$jdk\bin;$env:PATH"
 

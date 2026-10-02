@@ -20,12 +20,6 @@ import java.util.function.Consumer;
 
 /**
  * Texture Scaler — client-side NeoForge 1.21.1 entry point.
- *
- * <p>The whole algorithm lives in the shared {@code com.evernight.texturescaler.core}
- * module; this class only wires it to NeoForge. NeoForge 1.21.1 has no
- * {@code TextureStitchEvent}, and {@code TextureAtlas} no longer exposes the stitched
- * sprite list, so the optional atlas-sprite fallback is not registered — block/item
- * directories and the configured {@code extraTextureDirs} still drive the scan.</p>
  */
 @Mod(TextureScaler.MODID)
 public class TextureScaler {

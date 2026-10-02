@@ -2,13 +2,12 @@ package com.evernight.texturescaler.core;
 
 /**
  * Reads image dimensions straight from the PNG IHDR chunk without decoding the image.
- *
- * <p>This is the fast path that lets the scaler skip the ~99% of textures that are
- * already small enough without opening a decoder at all.</p>
  */
 public final class PngInfo {
 
-    /** Number of leading bytes required to read the IHDR dimensions. */
+    /**
+     * Number of leading bytes required to read the IHDR dimensions.
+     */
     public static final int HEADER_BYTES = 24;
 
     private PngInfo() {
@@ -16,7 +15,7 @@ public final class PngInfo {
 
     /**
      * @return {@code {width, height}} or {@code null} when {@code data} is not a plain
-     *         non-interlaced-readable PNG header (caller then falls back to a full decode).
+     * non-interlaced-readable PNG header (caller then falls back to a full decode).
      */
     public static int[] read(byte[] data) {
         if (data == null || data.length < HEADER_BYTES) {

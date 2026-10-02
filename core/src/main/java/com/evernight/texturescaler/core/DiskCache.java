@@ -22,16 +22,12 @@ import java.util.Map;
 
 /**
  * On-disk cache for downscaled textures plus the persistent "texture -> [w,h]" manifest.
- *
- * <p>Cache key = sha256 of {@code "namespace:path|srcWxsrcH|cap"}. The original dimensions
- * and the cap are part of the key, so any change (new mod version, changed cap, ...)
- * produces a different file and stale entries are simply never read again.</p>
- *
- * <p>Java 8 compatible: no {@code HexFormat}, {@code readAllBytes}, {@code Path.of}, etc.</p>
  */
 public final class DiskCache {
 
-    /** Name of the size manifest inside the cache dir. */
+    /**
+     * Name of the size manifest inside the cache dir.
+     */
     private static final String SIZES_FILE = "sizes.json";
 
     private final ScalerPlatform platform;
@@ -84,7 +80,7 @@ public final class DiskCache {
         }
         try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             // NOTE: instance API on purpose — the static JsonParser.parseReader(String/Reader)
-            // only exists since Gson 2.8.6, while Minecraft 1.12.2/1.16.5 ship Gson 2.8.0.
+            // only exists since Gson 2.8.6, while Minecraft 1.16.5 ships Gson 2.8.0.
             @SuppressWarnings("deprecation")
             JsonObject root = new JsonParser().parse(reader).getAsJsonObject();
             if (policy == null || !root.has("policy") || !policy.equals(root.get("policy").getAsString())) {
@@ -106,7 +102,9 @@ public final class DiskCache {
         return result;
     }
 
-    /** Persists the "texture path -> [w, h]" manifest (best effort, atomic rename). */
+    /**
+     * Persists the "texture path -> [w, h]" manifest (best effort, atomic rename).
+     */
     public void saveSizeManifest(String policy, Map<String, int[]> sizes) {
         if (!config().diskCacheEnabled) {
             return;
@@ -133,7 +131,9 @@ public final class DiskCache {
         }
     }
 
-    /** Read a cached entry, or {@code null} when absent/corrupt. */
+    /**
+     * Read a cached entry, or {@code null} when absent/corrupt.
+     */
     public byte[] get(String namespace, String path, int srcW, int srcH, int cap) {
         return get(namespace, path, srcW, srcH, cap, "");
     }
@@ -160,12 +160,16 @@ public final class DiskCache {
         }
     }
 
-    /** Store an entry (best effort, atomic rename). */
+    /**
+     * Store an entry (best effort, atomic rename).
+     */
     public void put(String namespace, String path, int srcW, int srcH, int cap, byte[] png) {
         put(namespace, path, srcW, srcH, cap, "", png);
     }
 
-    /** Variant-aware store; see {@link #get(String, String, int, int, int, String)}. */
+    /**
+     * Variant-aware store; see {@link #get(String, String, int, int, int, String)}.
+     */
     public void put(String namespace, String path, int srcW, int srcH, int cap, String variant, byte[] png) {
         if (!config().diskCacheEnabled) {
             return;
@@ -206,7 +210,9 @@ public final class DiskCache {
         return sb.toString();
     }
 
-    /** Java 8 stand-in for {@code InputStream.readAllBytes()} (Java 9+). */
+    /**
+     * Java 8 stand-in for {@code InputStream.readAllBytes()} (Java 9+).
+     */
     public static byte[] readAll(InputStream in) throws IOException {
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(8192);
         byte[] buf = new byte[8192];

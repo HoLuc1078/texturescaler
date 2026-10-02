@@ -18,8 +18,7 @@ import java.util.Map;
  * Fabric has no "add pack finder" event (and 1.16.5 has no
  * {@code AddPackFindersEvent}/{@code PackRepository#addPackFinder}), so the overlay is
  * injected straight into the repository's discovered-pack map using the repository's own
- * {@link Pack.PackConstructor}. The profile is declared {@code required}, so it is always
- * selected, and {@code Pack.Position.TOP} puts it above every other pack.
+ * {@code Pack.PackConstructor}.
  */
 @Mixin(PackRepository.class)
 public class PackRepositoryMixin {

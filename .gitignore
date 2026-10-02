@@ -14,10 +14,12 @@ bin/
 # --- Gradle / build output (patterns without a leading slash match at any depth) ---
 build/
 .gradle/
+.gradletasknamecache
 run/
 run-data/
 eclipse/
 mcmodsrepo/
+remappedSrc/
 dist/
 
 # --- Java ---
@@ -47,6 +49,4 @@ forge*changelog.txt
 .tools/
 _ref/
 **/_ref/
-
-# ---debug---
 debug/

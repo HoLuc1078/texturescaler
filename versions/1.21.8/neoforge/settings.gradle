@@ -1,0 +1,13 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases'
+        }
+        mavenCentral()
+    }
+}
+
+// No foojay toolchain resolver here: the JDK 21 toolchain is auto-detected from
+// %USERPROFILE%\.jdks\temurin-21 (which Gradle scans by default).

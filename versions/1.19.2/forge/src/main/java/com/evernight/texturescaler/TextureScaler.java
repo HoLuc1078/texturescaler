@@ -20,13 +20,6 @@ import java.util.function.Consumer;
 
 /**
  * Texture Scaler - client-side Forge 1.19.2 entry point.
- *
- * <p>The whole algorithm lives in the shared {@code com.evernight.texturescaler.core}
- * module; this class only wires it to Forge.</p>
- *
- * <p>No {@code TextureStitchEvent} hook: {@code TextureAtlas.getTextureLocations()} only
- * exists from 1.20.1 on. 1.18.2 stitches sprites by reading each texture through
- * {@code ResourceManager.getResource}, which our pack already intercepts.</p>
  */
 @Mod(TextureScaler.MODID)
 public class TextureScaler {

@@ -24,18 +24,6 @@ import java.util.function.Predicate;
 
 /**
  * 1.16.5-local {@code IResourcePack} adapter.
- *
- * <p>1.16.5 differs from 1.18+ in every interesting way:</p>
- * <ul>
- *   <li>the interface is {@code net.minecraft.resources.IResourcePack} (MCP names), not
- *       {@code net.minecraft.server.packs.PackResources};</li>
- *   <li>the directory lister is
- *       {@code getResources(ResourcePackType, String, String, int, Predicate<String>)} and it
- *       <em>returns</em> locations instead of receiving an output sink;</li>
- *   <li>{@code hasResource} is abstract and is the gate used by
- *       {@code FallbackResourceManager}, so it must answer "yes" for every texture we serve;</li>
- *   <li>resources are plain {@code InputStream}s (no {@code IoSupplier}).</li>
- * </ul>
  */
 public final class LocalTextureScalingPack implements IResourcePack {
 

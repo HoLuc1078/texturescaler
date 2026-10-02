@@ -15,7 +15,7 @@ import java.util.Set;
 
 /**
  * Dependency-free self-test for the shared core. Run with:
- *   java -cp <classes>:<gson> com.evernight.texturescaler.core.CoreSelfTest
+ * java -cp <classes>:<gson> com.evernight.texturescaler.core.CoreSelfTest
  * Exits non-zero on the first failed assertion.
  */
 public final class CoreSelfTest {
@@ -144,7 +144,7 @@ public final class CoreSelfTest {
         check("animated divided evenly", animDims != null && animDims[0] == 4 && animDims[1] == 120);
         check("animated frame count preserved",
                 animDims != null && (animDims[1] / Math.min(animDims[0], animDims[1]))
-                        * (animDims[0] / Math.min(animDims[0], animDims[1])) == 30);
+                         * (animDims[0] / Math.min(animDims[0], animDims[1])) == 30);
 
         check("pinned frame size left alone", !listed.containsKey("ns:textures/block/pinned.png"));
         byte[] plain = listed.get("ns:textures/block/plain.png");
@@ -343,7 +343,6 @@ public final class CoreSelfTest {
      * The GL query is only valid once the render backend exists, so callers may hit the
      * engine before a value is available. The cap must fall back, be latched once known,
      * never be downgraded by a later failed query, and honour {@code capOverride} without
-     * any GPU knowledge at all.
      */
     private static void testCapLatching() {
         ScalerConfig config = new ScalerConfig();

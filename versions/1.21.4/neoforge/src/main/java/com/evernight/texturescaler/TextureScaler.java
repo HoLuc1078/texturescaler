@@ -22,14 +22,6 @@ import java.util.function.Consumer;
 
 /**
  * Texture Scaler — client-side NeoForge 1.21.4 entry point.
- *
- * <p>The whole algorithm lives in the shared {@code com.evernight.texturescaler.core}
- * module; this class only wires it to NeoForge.</p>
- *
- * <p>1.21.4 moved client reload-listener registration from
- * {@code RegisterClientReloadListenersEvent} to {@code AddClientReloadListenersEvent},
- * and {@code TextureStitchEvent} is gone (replaced by {@code TextureAtlasStitchedEvent},
- * which no longer exposes the stitched sprite locations — see the report).</p>
  */
 @Mod(value = TextureScaler.MODID, dist = Dist.CLIENT)
 public class TextureScaler {
@@ -40,7 +32,9 @@ public class TextureScaler {
 
     static final NeoForgePlatform PLATFORM = new NeoForgePlatform();
     public static final ScalerEngine ENGINE = new ScalerEngine(PLATFORM);
-    /** 1.21.4 resource pack format is 46. */
+    /**
+     * 1.21.4 resource pack format is 46.
+     */
     private static final TextureScalingPack PACK =
             new TextureScalingPack(ENGINE, PLATFORM::isReadingOriginal, 46);
 

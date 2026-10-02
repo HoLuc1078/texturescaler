@@ -27,16 +27,6 @@ import java.util.function.Supplier;
 
 /**
  * 1.16.5-local {@code PackResources} adapter compiled against official Mojang mappings.
- *
- * <p>1.16.5 semantics differ from 1.18+ in three ways that matter to the overlay:</p>
- * <ul>
- *   <li>the directory lister is
- *       {@code getResources(PackType, String, String, int, Predicate<String>)} and it
- *       <em>returns</em> locations instead of receiving an output sink;</li>
- *   <li>{@code hasResource} is abstract and is the gate used by {@code FallbackResourceManager},
- *       so it must answer "yes" for every texture we serve;</li>
- *   <li>resources are plain {@code InputStream}s (no {@code IoSupplier}).</li>
- * </ul>
  */
 public final class LocalTextureScalingPack implements PackResources {
 
@@ -53,7 +43,9 @@ public final class LocalTextureScalingPack implements PackResources {
                 + "\"pack_format\":" + packFormat + "}}").getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Builds the (required, always-selected, highest-priority) pack profile for this overlay. */
+    /**
+     * Builds the (required, always-selected, highest-priority) pack profile for this overlay.
+     */
     public Pack createPack(Pack.PackConstructor constructor) {
         Supplier<PackResources> supplier = new Supplier<PackResources>() {
             @Override public PackResources get() { return LocalTextureScalingPack.this; }

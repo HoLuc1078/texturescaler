@@ -1,0 +1,8 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+        mavenCentral()
+    }
+}
+// No foojay toolchain resolver: the JDK is auto-detected from %USERPROFILE%\.jdks

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}",
+  "version": "${version}",
+  "name": "${mod_name}",
+  "description": "${mod_description}",
+  "authors": ["${mod_authors}"],
+  "license": "${mod_license}",
+  "icon": "texturescaler_logo.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.evernight.texturescaler.TextureScalerFabric"]
+  },
+  "mixins": ["texturescaler.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version_range}"
+  }
+}

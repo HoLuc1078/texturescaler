@@ -34,12 +34,16 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** Forge 1.21.1 implementation of the shared {@link ScalerPlatform}. */
+/**
+ * Forge 1.21.1 implementation of the shared {@link ScalerPlatform}.
+ */
 final class ForgePlatform implements ScalerPlatform {
 
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    /** Guards against our own pack being consulted while we read an original. */
+    /**
+     * Guards against our own pack being consulted while we read an original.
+     */
     private static final ThreadLocal<Boolean> READING_ORIGINAL = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private final ScalerLog log = new ScalerLog() {
@@ -78,7 +82,9 @@ final class ForgePlatform implements ScalerPlatform {
         return FMLPaths.GAMEDIR.get();
     }
 
-    /** Result of the one successful GL query, or 0 while the GL context is not ready yet. */
+    /**
+     * Result of the one successful GL query, or 0 while the GL context is not ready yet.
+     */
     private int cachedGpuMaxTextureSize;
 
     @Override
@@ -89,9 +95,6 @@ final class ForgePlatform implements ScalerPlatform {
         }
         // Never touch a GL entry point before the render backend created the capabilities:
         // LWJGL would call through an uninitialised function table and the JVM dies in
-        // native code (EXCEPTION_ACCESS_VIOLATION in lwjgl_opengl.dll), where no Java catch
-        // can help. GL.getCapabilities() throws (or returns null when LWJGL checks are off)
-        // in exactly that state, and both are safe to observe.
         try {
             if (GL.getCapabilities() == null) {
                 return 0;
@@ -194,7 +197,9 @@ final class ForgePlatform implements ScalerPlatform {
         return result;
     }
 
-    /** Namespaces discovered from the pack repository (works before the reload manager exists). */
+    /**
+     * Namespaces discovered from the pack repository (works before the reload manager exists).
+     */
     private static void collectRepositoryNamespaces(Set<String> result) {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.getResourcePackRepository() == null) {

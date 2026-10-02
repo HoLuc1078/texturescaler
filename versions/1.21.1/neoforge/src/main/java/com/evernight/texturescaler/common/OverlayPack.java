@@ -28,18 +28,6 @@ import java.util.Set;
 
 /**
  * 1.21.1 flavour of the shared vanilla {@link PackResources} overlay.
- *
- * <p>The resource-serving half is the shared {@code common/src/main/java}
- * {@code TextureScalingPack} implementation (packId / getNamespaces / getResource /
- * listResources / getMetadataSection), which is shared with {@link OriginalReadGuard}.
- * Only {@link #createPack()} differs: Minecraft 1.21.1 replaced the 1.20.1 factory
- * {@code Pack.readMetaAndCreate(String, Component, boolean, Pack.ResourcesSupplier,
- * PackType, Position, PackSource)} with the record-style
- * {@code Pack.readMetaAndCreate(PackLocationInfo, Pack.ResourcesSupplier, PackType,
- * PackSelectionConfig)}, and {@code Pack.ResourcesSupplier} is no longer a functional
- * interface ({@code openPrimary}/{@code openFull} now take a {@link PackLocationInfo}).
- * The shared module must not be edited, so the incompatible shared file is excluded from
- * this module's source set and this module-local class is compiled instead.</p>
  */
 public final class OverlayPack implements PackResources {
 
@@ -64,7 +52,9 @@ public final class OverlayPack implements PackResources {
                 + "\"pack_format\":" + packFormat + "}}").getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Builds the (required, always-selected, top-priority) profile for this overlay — 1.21.1 API. */
+    /**
+     * Builds the (required, always-selected, top-priority) profile for this overlay — 1.21.1 API.
+     */
     public Pack createPack() {
         Pack.ResourcesSupplier supplier = new Pack.ResourcesSupplier() {
             @Override

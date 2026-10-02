@@ -26,17 +26,6 @@ import java.util.function.Predicate;
 
 /**
  * Version-local {@link PackResources} adapter for Minecraft 1.18.2.
- *
- * <p>The shared {@code common.TextureScalingPack} targets the 1.20.1 API
- * ({@code packId()}, {@code listResources(..., ResourceOutput)}, {@code IoSupplier}).
- * 1.18.2 has none of those: the pack is identified by {@link #getName()}, individual
- * resources are returned as raw {@link InputStream}s and directory enumeration goes
- * through the old {@code getResources(type, namespace, path, maxDepth, filter)} method.
- * The scaling logic is still the shared {@link ScalerEngine}.</p>
- *
- * <p>1.18.2 does not use {@code atlases/*.json} directory sources, so the block atlas
- * fetches every sprite through {@link #getResource}; {@link #getResources} is only there
- * for completeness / other directory listings.</p>
  */
 public final class OverlayPack implements PackResources {
 
@@ -57,7 +46,9 @@ public final class OverlayPack implements PackResources {
                 + "\"pack_format\":" + packFormat + "}}").getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Builds the (required, always-selected, top-priority) profile for this overlay. */
+    /**
+     * Builds the (required, always-selected, top-priority) profile for this overlay.
+     */
     public Pack createPack() {
         return new Pack(
                 PACK_ID,

@@ -1,0 +1,68 @@
+buildscript {
+    repositories {
+        maven { url = "https://maven.fabricmc.net/" }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies { classpath "com.google.code.gson:gson:2.11.0" }
+    configurations.classpath { resolutionStrategy { force 'com.google.code.gson:gson:2.11.0' } }
+}
+plugins {
+    // OBFUSCATED Minecraft (1.21.11 and older): remapping + official mappings.
+    id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+    id 'maven-publish'
+}
+
+def sharedProps = new Properties()
+file('../../../gradle/mod.properties').withInputStream { sharedProps.load(it) }
+sharedProps.each { key, value -> ext.set(key.toString(), value.toString()) }
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id + '-' + minecraft_version + '-fabric'
+}
+
+repositories {
+    maven { url = "https://maven.fabricmc.net/" }
+}
+
+dependencies {
+    minecraft 'com.mojang:minecraft:' + minecraft_version
+    mappings loom.officialMojangMappings()
+    modImplementation 'net.fabricmc:fabric-loader:' + loader_version
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:' + fabric_api_version
+}
+
+// Version- and loader-independent algorithm shared by every module.
+sourceSets.main.java.srcDir file('../../../core/src/main/java')
+// Identifier-era adapter shared with the 26.x modules.
+sourceSets.main.java.srcDir file('../common/src/main/java')
+
+processResources {
+    filteringCharset = 'UTF-8'
+    def props = [
+            version          : project.version,
+            mod_id           : mod_id,
+            mod_name         : mod_name,
+            mod_description  : mod_description,
+            mod_authors      : mod_authors,
+            mod_license      : mod_license,
+            loader_version   : loader_version,
+            minecraft_version_range: minecraft_version_range,
+            pack_format      : pack_format,
+    ]
+    inputs.properties props
+    filesMatching('fabric.mod.json') { expand props }
+    filesMatching('pack.mcmeta') { expand props }
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

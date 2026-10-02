@@ -20,17 +20,6 @@ import java.util.Set;
  * Scans every block/item model JSON to record, per texture, the largest
  * {@code texture_size} of any model that references it (Blockbench models use
  * absolute-pixel UVs).
- *
- * <p>If a texture is referenced by a model whose {@code texture_size} exceeds the
- * downscaled size, downscaling would push the model's UVs out of bounds and corrupt
- * rendering, so such textures are skipped. Vanilla-style models have no
- * {@code texture_size} (UVs normalized to 16) and never constrain scaling.</p>
- *
- * <p>Model ids are plain strings exactly as the platform reports them; parent lookups
- * try every plausible spelling ({@code ns:path}, {@code ns:path.json},
- * {@code ns:models/path}, {@code ns:models/path.json}) so the scanner works whether a
- * given Minecraft version strips the {@code models/} prefix and {@code .json} suffix or
- * not.</p>
  */
 public final class ModelScanner {
 
@@ -41,7 +30,7 @@ public final class ModelScanner {
 
     /**
      * @return map "ns:spritePath" (e.g. {@code citymod:block/laptop}) -> max texture_size
-     *         edge, 0 meaning "no constraint".
+     * edge, 0 meaning "no constraint".
      */
     public static Map<String, Integer> scan(Map<String, String> models) {
         Map<String, Integer> result = new HashMap<String, Integer>();
@@ -115,7 +104,9 @@ public final class ModelScanner {
         return result;
     }
 
-    /** Walk the parent chain from the given model upward; root first, cycle/depth guarded. */
+    /**
+     * Walk the parent chain from the given model upward; root first, cycle/depth guarded.
+     */
     private static List<JsonObject> buildParentChain(String modelId, Map<String, JsonObject> models) {
         List<JsonObject> chain = new ArrayList<JsonObject>();
         Set<String> visited = new HashSet<String>();
@@ -148,7 +139,9 @@ public final class ModelScanner {
         return chain;
     }
 
-    /** Try every spelling of a model id; {@code null} when none is present. */
+    /**
+     * Try every spelling of a model id; {@code null} when none is present.
+     */
     private static String locate(Map<String, JsonObject> models, String id) {
         if (id == null || id.isEmpty()) {
             return null;

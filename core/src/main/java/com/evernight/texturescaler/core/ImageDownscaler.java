@@ -10,24 +10,15 @@ import java.io.IOException;
 
 /**
  * Pure-JDK image downscaler.
- *
- * <p>Uses {@code javax.imageio}/{@code java.awt} instead of Minecraft's
- * {@code com.mojang.blaze3d.platform.NativeImage} on purpose: the {@code NativeImage}
- * API (and even its pixel getters/setters) changed several times between 1.12.2 and
- * 1.21.4, while {@code ImageIO} is stable across every Java version we target (8..21)
- * and every Minecraft version. That keeps the whole scaling algorithm in the shared
- * core instead of being duplicated per version.</p>
- *
- * <p>Quality: for large reductions the image is halved repeatedly (a cheap box filter)
- * before the final bilinear step, which avoids the aliasing a single bilinear sample
- * would produce when e.g. 4096 px is reduced to 512 px in one go.</p>
  */
 public final class ImageDownscaler {
 
     private ImageDownscaler() {
     }
 
-    /** Outcome of a successful downscale. */
+    /**
+     * Outcome of a successful downscale.
+     */
     public static final class Result {
         public final byte[] png;
         public final int srcW;
@@ -48,9 +39,6 @@ public final class ImageDownscaler {
      * Downscales {@code original} so that its largest edge becomes {@code cap}, preserving
      * the aspect ratio. Returns {@code null} when the image is already small enough or
      * cannot be decoded (the caller then leaves the texture untouched).
-     *
-     * <p>Only safe for textures <b>without</b> an animation sidecar; see
-     * {@link #downscaleByDivisor(byte[], int)} for filmstrips.</p>
      */
     public static Result downscale(byte[] original, int cap) {
         if (original == null || cap <= 0) {
@@ -78,14 +66,6 @@ public final class ImageDownscaler {
     /**
      * Downscales by an exact integer {@code divisor}, i.e. {@code newW = w / divisor} and
      * {@code newH = h / divisor}.
-     *
-     * <p>This is the only resize that keeps a vanilla animation filmstrip intact: both
-     * edges shrink by the same rational factor, so the frame size
-     * ({@code min(w, h) / divisor} for a sidecar without an explicit frame size) and the
-     * frame count are preserved exactly.</p>
-     *
-     * @return the scaled result, or {@code null} when {@code divisor < 2}, the image cannot
-     *         be decoded, or the divisor does not divide both edges
      */
     public static Result downscaleByDivisor(byte[] original, int divisor) {
         if (original == null || divisor < 2) {

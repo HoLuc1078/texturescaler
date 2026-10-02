@@ -1,0 +1,58 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.148'
+}
+
+def sharedProps = new Properties()
+file('../../../gradle/mod.properties').withInputStream { sharedProps.load(it) }
+sharedProps.each { key, value -> ext.set(key.toString(), value.toString()) }
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id + '-' + minecraft_version + '-neoforge'
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+neoForge {
+    version = neoforge_version
+    runs {
+        client { client() }
+        server { server() }
+    }
+    mods {
+        "${mod_id}" { sourceSet sourceSets.main }
+    }
+}
+
+// Version- and loader-independent algorithm shared by every module.
+sourceSets.main.java.srcDir file('../../../core/src/main/java')
+// Identifier-era adapter shared with the 1.21.11 and Fabric 26.x modules.
+sourceSets.main.java.srcDir file('../../1.21.11/common/src/main/java')
+
+tasks.named('processResources', ProcessResources).configure {
+    filteringCharset = 'UTF-8'
+    def replaceProperties = [
+            minecraft_version       : minecraft_version,
+            minecraft_version_range : minecraft_version_range,
+            neoforge_version        : neoforge_version,
+            neoforge_version_range  : neoforge_version_range,
+            loader_version_range    : loader_version_range,
+            mod_id                  : mod_id,
+            mod_name                : mod_name,
+            mod_display_name        : mod_display_name,
+            mod_license             : mod_license,
+            mod_version             : mod_version,
+            mod_authors             : mod_authors,
+            mod_description         : mod_description,
+            pack_format             : pack_format,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/neoforge.mods.toml']) { expand replaceProperties }
+    filesMatching('pack.mcmeta') { expand replaceProperties }
+}
+
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

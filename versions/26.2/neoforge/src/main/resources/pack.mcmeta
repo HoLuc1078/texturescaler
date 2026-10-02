@@ -1,0 +1,6 @@
+{
+  "pack": {
+    "description": { "text": "Texture Scaler" },
+    "pack_format": ${pack_format}
+  }
+}

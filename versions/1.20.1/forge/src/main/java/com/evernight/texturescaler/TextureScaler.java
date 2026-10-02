@@ -25,9 +25,6 @@ import java.util.function.Consumer;
 
 /**
  * Texture Scaler — client-side Forge 1.20.1 entry point.
- *
- * <p>The whole algorithm now lives in the shared {@code com.evernight.texturescaler.core}
- * module; this class only wires it to Forge.</p>
  */
 @Mod(TextureScaler.MODID)
 public class TextureScaler {

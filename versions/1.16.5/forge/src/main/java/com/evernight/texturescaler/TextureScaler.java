@@ -21,15 +21,6 @@ import java.util.function.Consumer;
 
 /**
  * Texture Scaler — client-side Forge 1.16.5 entry point.
- *
- * <p>All of the algorithm lives in the shared {@code com.evernight.texturescaler.core} module;
- * this class only wires it to the 1.16.5 Forge client.</p>
- *
- * <p>Forge 1.16.5 has neither {@code AddPackFindersEvent} nor
- * {@code RegisterClientReloadListenersEvent} (both arrived in later versions), so the overlay
- * pack is injected into the {@code ResourcePackList} through {@code addPackFinder} and the
- * reload listener is registered straight on the client {@code IReloadableResourceManager}
- * during {@link FMLClientSetupEvent} — which Forge fires before the first resource reload.</p>
  */
 @Mod(TextureScaler.MODID)
 public class TextureScaler {
@@ -38,7 +29,9 @@ public class TextureScaler {
 
     public static final Logger LOGGER = LogManager.getLogger(MODID);
 
-    /** The client resource pack format used by Minecraft 1.16.2 – 1.16.5. */
+    /**
+     * The client resource pack format used by Minecraft 1.16.2 – 1.16.5.
+     */
     private static final int PACK_FORMAT = 5;
 
     static final ForgePlatform PLATFORM = new ForgePlatform();

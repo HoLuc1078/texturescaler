@@ -14,27 +14,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The version- and loader-independent scaling engine.
- *
- * <p>This is a direct port of the proven Forge 1.20.1 implementation
- * ({@code TextureScalingPack}) with the Minecraft APIs replaced by {@link ScalerPlatform}.
- * The behaviour is intentionally identical:</p>
- *
- * <ul>
- *   <li>the block atlas does <b>not</b> fetch textures through {@code getResource}; it
- *       enumerates them through the directory lister, so we must be able to re-emit a
- *       merged, downscaled listing ({@link #getListedScaled()});</li>
- *   <li>{@code getResource} is still honoured for non-listing lookups;</li>
- *   <li>a PNG header peek skips the small majority cheaply and feeds a persistent size
- *       manifest;</li>
- *   <li>the disk cache is consulted <em>before</em> decoding the original;</li>
- *   <li>Blockbench absolute-pixel UVs ({@code texture_size}) veto scaling;</li>
- *   <li>a second reload with an unchanged pack list reuses the previous scan and only
- *       checks newly appeared textures (incremental).</li>
- * </ul>
  */
 public final class ScalerEngine {
 
-    /** How many candidate locations are logged in detail per reload (then only counted). */
+    /**
+     * How many candidate locations are logged in detail per reload (then only counted).
+     */
     private static final int SAMPLE_LIMIT = 60;
 
     private final ScalerPlatform platform;
@@ -44,40 +29,64 @@ public final class ScalerEngine {
 
     private volatile int currentCap = 512;
 
-    /** Cap applied to textures whose longest edge exceeds the detail threshold. */
+    /**
+     * Cap applied to textures whose longest edge exceeds the detail threshold.
+     */
     private volatile int currentDetailCap = 2048;
 
-    /** Cap applied to extreme-aspect ("strip") textures. */
+    /**
+     * Cap applied to extreme-aspect ("strip") textures.
+     */
     private volatile int currentStripCap = 4096;
 
-    /** Identity of the cap policy; the persisted size manifest is only reused when it matches. */
+    /**
+     * Identity of the cap policy; the persisted size manifest is only reused when it matches.
+     */
     private volatile String currentPolicyId = "unresolved";
 
-    /** Latched result of the first successful GPU query; 0 = not known yet. */
+    /**
+     * Latched result of the first successful GPU query; 0 = not known yet.
+     */
     private volatile int detectedGpuMaxTextureSize = 0;
 
-    /** True once the cap has been resolved (or the fallback been reported) once. */
+    /**
+     * True once the cap has been resolved (or the fallback been reported) once.
+     */
     private volatile boolean capResolved = false;
 
-    /** "ns:spritePath" -> max texture_size edge of referencing models (0 = no constraint). */
+    /**
+     * "ns:spritePath" -> max texture_size edge of referencing models (0 = no constraint).
+     */
     private volatile Map<String, Integer> modelUvConstraints = Collections.emptyMap();
 
-    /** "ns:spritePath" set of block-atlas sprites captured after the previous stitch. */
+    /**
+     * "ns:spritePath" set of block-atlas sprites captured after the previous stitch.
+     */
     private volatile Set<String> blockAtlasSprites = null;
 
-    /** Namespaces this pack claims, so the resource manager routes lookups to us. */
+    /**
+     * Namespaces this pack claims, so the resource manager routes lookups to us.
+     */
     private volatile Set<String> claimedNamespaces = null;
 
-    /** Extra block-atlas texture directories from the config. */
+    /**
+     * Extra block-atlas texture directories from the config.
+     */
     private volatile List<String> extraDirs = Collections.emptyList();
 
-    /** In-memory scaled results for getResource lookups. */
+    /**
+     * In-memory scaled results for getResource lookups.
+     */
     private final Map<String, byte[]> scaledCache = new ConcurrentHashMap<String, byte[]>();
 
-    /** Locations we decided not to touch (small, model-UV constrained, or unreadable). */
+    /**
+     * Locations we decided not to touch (small, model-UV constrained, or unreadable).
+     */
     private final Set<String> knownUntouched = ConcurrentHashMap.newKeySet();
 
-    /** Locations with no original available anywhere. */
+    /**
+     * Locations with no original available anywhere.
+     */
     private final Set<String> knownMissing = ConcurrentHashMap.newKeySet();
 
     // ---- listing (atlas) state --------------------------------------------
@@ -87,11 +96,15 @@ public final class ScalerEngine {
     private final Object listingLock = new Object();
     private volatile Set<String> lastListedPaths = Collections.emptySet();
     private volatile String lastPackFingerprint = null;
-    /** Cap policy the cached listing was computed with; reuse is only valid when it is unchanged. */
+    /**
+     * Cap policy the cached listing was computed with; reuse is only valid when it is unchanged.
+     */
     private volatile String lastListingPolicy = null;
     private volatile boolean incrementalPending = false;
 
-    /** Re-entrancy guard for the nested manager listing inside our own listing. */
+    /**
+     * Re-entrancy guard for the nested manager listing inside our own listing.
+     */
     private final ThreadLocal<Boolean> inListing = new ThreadLocal<Boolean>() {
         @Override protected Boolean initialValue() { return Boolean.FALSE; }
     };
@@ -104,13 +117,19 @@ public final class ScalerEngine {
     private final AtomicLong statModelSkipped = new AtomicLong();
     private final AtomicLong statMissing = new AtomicLong();
     private final AtomicLong statFailed = new AtomicLong();
-    /** Animated filmstrips resized by an exact integer factor (frame grid preserved). */
+    /**
+     * Animated filmstrips resized by an exact integer factor (frame grid preserved).
+     */
     private final AtomicLong statAnimDivided = new AtomicLong();
-    /** Animated filmstrips deliberately served untouched (already stitchable or not divisible). */
+    /**
+     * Animated filmstrips deliberately served untouched (already stitchable or not divisible).
+     */
     private final AtomicLong statAnimKept = new AtomicLong();
     private final AtomicLong sampled = new AtomicLong();
 
-    /** Per-reload memo of the {@code .mcmeta} probe; {@link AnimationInfo#NONE} = plain texture. */
+    /**
+     * Per-reload memo of the {@code .mcmeta} probe; {@link AnimationInfo#NONE} = plain texture.
+     */
     private final Map<String, AnimationInfo> animationCache = new ConcurrentHashMap<String, AnimationInfo>();
 
     public ScalerEngine(ScalerPlatform platform) {
@@ -128,7 +147,9 @@ public final class ScalerEngine {
 
     // ---- lifecycle --------------------------------------------------------
 
-    /** Called on every resource reload, before the background work of the reload listener. */
+    /**
+     * Called on every resource reload, before the background work of the reload listener.
+     */
     public void onReloadStart() {
         resetStats();
         sampled.set(0);
@@ -172,7 +193,9 @@ public final class ScalerEngine {
                 claimedNamespaces == null ? 0 : claimedNamespaces.size());
     }
 
-    /** Logs the outcome of a reload after the reload barrier completes. */
+    /**
+     * Logs the outcome of a reload after the reload barrier completes.
+     */
     public void onReloadEnd() {
         log().info("[TextureScaler] reload finished: consulted {}, scaled {}, small {}, model-uv-skipped {}, "
                         + "missing {}, failed {}, animated-divided {}, animated-kept {}",
@@ -201,7 +224,9 @@ public final class ScalerEngine {
 
     // ---- state setters ----------------------------------------------------
 
-    /** Runs the (relatively expensive) model scan; intended for the background reload executor. */
+    /**
+     * Runs the (relatively expensive) model scan; intended for the background reload executor.
+     */
     public void scanModelUvConstraints() {
         Map<String, String> models = platform.listModels();
         setModelUvConstraints(ModelScanner.scan(models));
@@ -213,7 +238,9 @@ public final class ScalerEngine {
                 : Collections.unmodifiableMap(new HashMap<String, Integer>(constraints));
     }
 
-    /** Called after each stitch with the sprite ids that entered the block atlas. */
+    /**
+     * Called after each stitch with the sprite ids that entered the block atlas.
+     */
     public void rememberBlockAtlasSprites(Set<String> spriteKeys) {
         if (spriteKeys == null || spriteKeys.isEmpty()) {
             return;
@@ -223,13 +250,6 @@ public final class ScalerEngine {
 
     /**
      * Recomputes the scaling cap.
-     *
-     * <p>Safe to call from anywhere, including a mod initializer that runs inside the
-     * Minecraft constructor: querying the GPU is delegated to the platform, which returns
-     * {@code <= 0} rather than touching GL before the render backend is initialized. The
-     * first positive result is <b>latched</b>, so a later unsuccessful query (background
-     * thread, config event before the window exists) can never downgrade a known GPU value
-     * to the fallback. The value is retried on every resource reload until it is known.</p>
      */
     public void updateCap() {
         int gpu = detectedGpuMaxTextureSize;
@@ -294,27 +314,37 @@ public final class ScalerEngine {
         return currentCap;
     }
 
-    /** Cap used for textures whose longest edge exceeds the detail threshold. */
+    /**
+     * Cap used for textures whose longest edge exceeds the detail threshold.
+     */
     public int currentDetailCap() {
         return currentDetailCap;
     }
 
-    /** Cap used for extreme-aspect ("strip") textures. */
+    /**
+     * Cap used for extreme-aspect ("strip") textures.
+     */
     public int currentStripCap() {
         return currentStripCap;
     }
 
-    /** The cap that will be applied to a texture of this original size. */
+    /**
+     * The cap that will be applied to a texture of this original size.
+     */
     public int capFor(int textureW, int textureH) {
         return config().capFor(detectedGpuMaxTextureSize, textureW, textureH);
     }
 
-    /** The latched {@code GL_MAX_TEXTURE_SIZE} reported by the platform; 0 = unknown. */
+    /**
+     * The latched {@code GL_MAX_TEXTURE_SIZE} reported by the platform; 0 = unknown.
+     */
     public int detectedGpuMaxTextureSize() {
         return detectedGpuMaxTextureSize;
     }
 
-    /** True while the engine itself is enumerating textures (re-entrancy guard for the pack). */
+    /**
+     * True while the engine itself is enumerating textures (re-entrancy guard for the pack).
+     */
     public boolean isListing() {
         return inListing.get();
     }
@@ -327,7 +357,9 @@ public final class ScalerEngine {
         return cache;
     }
 
-    /** Namespaces the overlay pack answers for (never caches an empty result). */
+    /**
+     * Namespaces the overlay pack answers for (never caches an empty result).
+     */
     public Set<String> getNamespaces() {
         if (!config().enabled) {
             return Collections.emptySet();
@@ -354,7 +386,7 @@ public final class ScalerEngine {
 
     /**
      * @return the downscaled PNG bytes to serve for this texture, or {@code null} to let
-     *         the original pack win.
+     * the original pack win.
      */
     public byte[] getScaledResource(String namespace, String path) {
         if (!config().enabled) {
@@ -397,7 +429,9 @@ public final class ScalerEngine {
 
     // ---- listing (atlas) path ---------------------------------------------
 
-    /** The merged, downscaled texture listing for the current reload. */
+    /**
+     * The merged, downscaled texture listing for the current reload.
+     */
     public Map<String, byte[]> getListedScaled() {
         ensureListingComputed();
         return listedScaled;
@@ -605,7 +639,9 @@ public final class ScalerEngine {
 
     // ---- scaling ----------------------------------------------------------
 
-    /** Reads (and memoises for this reload) the {@code .png.mcmeta} sidecar of one texture. */
+    /**
+     * Reads (and memoises for this reload) the {@code .png.mcmeta} sidecar of one texture.
+     */
     private AnimationInfo animationOf(String namespace, String path) {
         String key = key(namespace, path);
         AnimationInfo known = animationCache.get(key);
@@ -627,11 +663,6 @@ public final class ScalerEngine {
 
     /**
      * How one oversized texture must be resized.
-     *
-     * @return {@code 1} for the ordinary aspect-preserving resize to {@code cap};
-     *         {@code >= 2} for an exact integer divide (the only resize that keeps a
-     *         vanilla animation filmstrip's frame grid intact); {@code 0} when the texture
-     *         must be left untouched because no safe resize exists.
      */
     private int scaleDivisorFor(String namespace, String path, int w, int h, int cap) {
         if (w <= 0 || h <= 0) {
@@ -648,9 +679,6 @@ public final class ScalerEngine {
         }
         // An animated strip may only be divided by an integer factor, and that lattice is
         // coarse (62x11408 has just {2, 31, 62}, so the quality cap would force 2x368).
-        // Shrink it only as far as the stitcher physically requires - a sprite taller than
-        // GL_MAX_TEXTURE_SIZE cannot be stitched at all, which is the actual crash - and
-        // otherwise keep the frames pristine.
         ScalerConfig cfg = config();
         int gpu = detectedGpuMaxTextureSize;
         int limit;
@@ -671,7 +699,9 @@ public final class ScalerEngine {
         return k < 2 ? 0 : k;
     }
 
-    /** Disk-cache discriminator for the selected resize policy ("" = aspect-preserving). */
+    /**
+     * Disk-cache discriminator for the selected resize policy ("" = aspect-preserving).
+     */
     private static String variantFor(int divisor) {
         return divisor > 1 ? "k" + divisor : "";
     }
@@ -740,7 +770,9 @@ public final class ScalerEngine {
         return namespace + ":" + path;
     }
 
-    /** "ns:spritePath" (textures/ prefix and .png suffix stripped). */
+    /**
+     * "ns:spritePath" (textures/ prefix and .png suffix stripped).
+     */
     private static String spriteKey(String namespace, String path) {
         String p = path;
         if (p.startsWith("textures/") && p.endsWith(".png")) {

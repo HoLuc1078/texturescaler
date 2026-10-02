@@ -23,22 +23,6 @@ import java.util.Set;
 
 /**
  * 1.21.4 variant of the loader-independent {@link PackResources} adapter (vanilla API only).
- *
- * <p>1.21.4 reworked the resource-pack plumbing compared with 1.20.1, so the shared
- * {@code common/} copy no longer compiles here:</p>
- *
- * <ul>
- *   <li>{@code Pack.readMetaAndCreate} now takes a {@link PackLocationInfo} and a
- *       {@link Pack.ResourcesSupplier} instead of an id/title plus a factory function;</li>
- *   <li>{@link PackResources} gained {@code location()} and an abstract
- *       {@code getMetadataSection(MetadataSectionType)}; both are inherited from
- *       {@link AbstractPackResources};</li>
- *   <li>{@code ResourceLocation} has no public constructor any more, so
- *       {@code ResourceLocation.fromNamespaceAndPath} is used instead.</li>
- * </ul>
- *
- * <p>The class name, package and behaviour are identical to the shared 1.20.1 copy, so
- * the loader-specific code below it is unchanged.</p>
  */
 public final class TextureScalingPack extends AbstractPackResources {
 
@@ -58,7 +42,9 @@ public final class TextureScalingPack extends AbstractPackResources {
                 + "\"pack_format\":" + packFormat + "}}").getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Builds the (required, always-selected, top-priority) profile for this overlay. */
+    /**
+     * Builds the (required, always-selected, top-priority) profile for this overlay.
+     */
     public Pack createPack() {
         return Pack.readMetaAndCreate(
                 location(),

@@ -1,0 +1,8 @@
+pluginManagement {
+    repositories {
+        maven { url = "https://maven.fabricmc.net/" }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+// No foojay toolchain resolver: the JDK is auto-detected from %USERPROFILE%\.jdks

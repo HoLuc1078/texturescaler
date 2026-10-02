@@ -25,15 +25,6 @@ import java.util.Set;
 
 /**
  * Loader-independent {@link PackResources} adapter (vanilla API only).
- *
- * <p>The block atlas enumerates textures through {@code listResources} (via the
- * {@code atlases/blocks.json} directory sources), while individual lookups go through
- * {@code getResource}; both delegate to the shared {@link ScalerEngine}. Because this class
- * references only vanilla classes it is shared verbatim by the Forge, NeoForge and Fabric
- * modules (the latter compiled with official Mojang mappings).</p>
- *
- * <p>Not used on 1.16.5, where the atlas still reads sprites one by one and the interface
- * method is named {@code getResources}.</p>
  */
 public final class TextureScalingPack implements PackResources {
 
@@ -52,7 +43,9 @@ public final class TextureScalingPack implements PackResources {
                 + "\"pack_format\":" + packFormat + "}}").getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Builds the (required, always-selected, top-priority) profile for this overlay. */
+    /**
+     * Builds the (required, always-selected, top-priority) profile for this overlay.
+     */
     public Pack createPack() {
         return Pack.readMetaAndCreate(
                 PACK_ID,
