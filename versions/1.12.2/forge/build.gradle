@@ -1,0 +1,144 @@
+plugins {
+    id 'java'
+    id 'java-library'
+    id 'maven-publish'
+    id 'com.gtnewhorizons.retrofuturagradle' version '1.4.9'
+}
+
+// Shared mod metadata (single source of truth for every version/loader module).
+def sharedProps = new Properties()
+file('../../../gradle/mod.properties').withInputStream { sharedProps.load(it) }
+sharedProps.each { key, value -> ext.set(key.toString(), value.toString()) }
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}-forge"
+}
+
+minecraft {
+    // RetroFuturaGradle only accepts the bare MC versions '1.7.10' and '1.12.2' here.
+    mcVersion = minecraft_version
+    mcpMappingChannel = mcp_mapping_channel
+    mcpMappingVersion = mcp_mapping_version
+    username = 'Developer'
+
+    // Mod code must stay Java 8 bytecode, but no JDK 8 is installed locally, so compile
+    // with the JDK 17 toolchain while still emitting Java 8 classes.
+    javaCompatibilityVersion = 8
+    jvmLanguageVersion = JavaLanguageVersion.of(17)
+
+    // NOTE: skipSlowTasks must stay false. RetroFuturaGradle obtains the *MCP-named*
+    // Minecraft classes by decompiling the SRG jar and recompiling it, and that recompiled
+    // source set (build/classes/java/patchedMc) is what the mod compiles against.
+    // Skipping it leaves net.minecraft.* off the compile classpath entirely.
+    skipSlowTasks = false
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+// Version- and loader-independent algorithm shared by every module (Java 8 compatible).
+sourceSets.main.java.srcDir file('../../../core/src/main/java')
+// NOTE: ../../../common is intentionally NOT wired in here. common/TextureScalingPack
+// implements the 1.18+ net.minecraft.server.packs.PackResources API, which does not
+// exist on 1.12.2. This module ships its own IResourcePack adapter instead.
+
+// The @Mod annotation needs a compile-time constant version, so generate it from
+// gradle/mod.properties instead of hardcoding it (a hardcoded copy drifts silently).
+def modVersionDir = layout.buildDirectory.dir('generated/sources/modVersion/java')
+def generateModVersion = tasks.register('generateModVersion') {
+    def outDir = modVersionDir
+    def value = mod_version
+    inputs.property('modVersion', value)
+    outputs.dir(outDir)
+    doLast {
+        def f = outDir.get().file('com/evernight/texturescaler/ModVersion.java').asFile
+        f.parentFile.mkdirs()
+        f.text = 'package com.evernight.texturescaler;\n\n' +
+                '/** Generated from gradle/mod.properties - do not edit. */\n' +
+                'final class ModVersion {\n' +
+                '    static final String VERSION = "' + value + '";\n' +
+                '}\n'
+    }
+}
+sourceSets.main.java.srcDir modVersionDir
+tasks.named('compileJava').configure { dependsOn generateModVersion }
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'MinecraftForge'
+        url = 'https://maven.minecraftforge.net/'
+    }
+}
+
+dependencies {
+    // RetroFuturaGradle feeds the deobfuscated Minecraft/Forge classpath into the
+    // java-library configurations automatically, and that classpath already contains the
+    // Gson shipped by 1.12.2 (2.8.0). The shared core deliberately sticks to the Gson
+    // 2.8.0-compatible instance API, so no extra Gson is required — and none may be
+    // bundled: every 1.12.2 mod shares a single LaunchClassLoader.
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 8
+}
+
+// Debug helper: prints the fully resolved (deobfuscated) compile classpath.
+tasks.register('printCompileCp') {
+    doLast {
+        println sourceSets.main.compileClasspath.asPath
+    }
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    filteringCharset = 'UTF-8'
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            forge_version          : forge_version,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+            mod_display_name       : mod_display_name,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['mcmod.info']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifact tasks.named('reobfJar')
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}

@@ -1,0 +1,78 @@
+// Loom 1.x pulls Gson 2.9.1, which cannot set final fields on modern JDKs
+// (google/gson#2699). Force a fixed Gson onto the buildscript classpath.
+buildscript {
+    repositories {
+        maven { url = "https://maven.fabricmc.net/" }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath "net.fabricmc:fabric-loom:1.14.10"
+        classpath "com.google.code.gson:gson:2.11.0"
+    }
+    configurations.classpath {
+        resolutionStrategy {
+            force 'com.google.code.gson:gson:2.11.0'
+        }
+    }
+}
+
+apply plugin: 'fabric-loom'
+apply plugin: 'maven-publish'
+
+def sharedProps = new Properties()
+file('../../../gradle/mod.properties').withInputStream { sharedProps.load(it) }
+sharedProps.each { key, value -> ext.set(key.toString(), value.toString()) }
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}-fabric"
+}
+
+repositories {
+    maven { url = "https://maven.fabricmc.net/" }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+    // Official Mojang mappings so the shared core/common sources use the same names as NeoForge.
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+}
+
+// Version- and loader-independent algorithm shared by every module.
+sourceSets.main.java.srcDir file('../../../core/src/main/java')
+// 1.21.4 flavour of the vanilla-only adapter (the shared common/ copy targets 1.20.1).
+sourceSets.main.java.srcDir file('../common/src/main/java')
+
+processResources {
+    filteringCharset = 'UTF-8'
+    def props = [
+            version          : project.version,
+            mod_id           : mod_id,
+            mod_name         : mod_name,
+            mod_description  : mod_description,
+            mod_authors      : mod_authors,
+            mod_license      : mod_license,
+            loader_version   : loader_version,
+            minecraft_version: minecraft_version,
+    ]
+    inputs.properties props
+    filesMatching('fabric.mod.json') {
+        expand props
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

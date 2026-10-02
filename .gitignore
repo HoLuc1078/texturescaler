@@ -1,5 +1,6 @@
 # --- IDE ---
 .idea/
+.vscode/
 out/
 *.ipr
 *.iws
@@ -10,20 +11,42 @@ out/
 bin/
 *.launch
 
-# --- Gradle / build output ---
+# --- Gradle / build output (patterns without a leading slash match at any depth) ---
 build/
 .gradle/
 run/
 run-data/
 eclipse/
+mcmodsrepo/
+dist/
 
 # --- Java ---
 *.class
+*.hprof
 
-# --- Logs ---
+# --- Logs / crash output ---
 *.log
+logs/
+crash-reports/
 hs_err_pid*
 replay_pid*
 
-# --- Forge MDK template leftovers ---
+# --- OS metadata ---
+.DS_Store
+Thumbs.db
+
+# --- Patch leftovers ---
+*.orig
+*.rej
+
+# --- Forge MDK / RFG template leftovers ---
 forge*changelog.txt
+
+# --- Local tooling / porting scratch ---
+.tmp/
+.tools/
+_ref/
+**/_ref/
+
+# ---debug---
+debug/

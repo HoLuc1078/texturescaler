@@ -1,0 +1,19 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = 'GTNH Maven'
+            url = 'https://nexus.gtnewhorizons.com/repository/public/'
+        }
+        maven {
+            name = 'MinecraftForge'
+            url = 'https://maven.minecraftforge.net/'
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// RetroFuturaGradle 1.4.x requires Gradle >= 7.6 and runs fine on Gradle 8 + JDK 17.
+// NOTE: the org.gradle.toolchains.foojay-resolver-convention plugin is deliberately
+// absent here. It is only safe for ForgeGradle/NeoGradle module families; keeping the
+// module free of it also avoids any chance of shading Gson for a Loom-style consumer.

@@ -1,0 +1,150 @@
+package com.evernight.texturescaler.common;
+
+import com.evernight.texturescaler.core.ScalerEngine;
+import com.mojang.logging.LogUtils;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.packs.AbstractPackResources;
+import net.minecraft.server.packs.PackLocationInfo;
+import net.minecraft.server.packs.PackResources;
+import net.minecraft.server.packs.PackSelectionConfig;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.repository.Pack;
+import net.minecraft.server.packs.repository.PackSource;
+import net.minecraft.server.packs.resources.IoSupplier;
+import org.slf4j.Logger;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+/**
+ * 1.21.4 variant of the loader-independent {@link PackResources} adapter (vanilla API only).
+ *
+ * <p>1.21.4 reworked the resource-pack plumbing compared with 1.20.1, so the shared
+ * {@code common/} copy no longer compiles here:</p>
+ *
+ * <ul>
+ *   <li>{@code Pack.readMetaAndCreate} now takes a {@link PackLocationInfo} and a
+ *       {@link Pack.ResourcesSupplier} instead of an id/title plus a factory function;</li>
+ *   <li>{@link PackResources} gained {@code location()} and an abstract
+ *       {@code getMetadataSection(MetadataSectionType)}; both are inherited from
+ *       {@link AbstractPackResources};</li>
+ *   <li>{@code ResourceLocation} has no public constructor any more, so
+ *       {@code ResourceLocation.fromNamespaceAndPath} is used instead.</li>
+ * </ul>
+ *
+ * <p>The class name, package and behaviour are identical to the shared 1.20.1 copy, so
+ * the loader-specific code below it is unchanged.</p>
+ */
+public final class TextureScalingPack extends AbstractPackResources {
+
+    private static final Logger LOGGER = LogUtils.getLogger();
+
+    public static final String PACK_ID = "texturescaler_overlay";
+
+    private final ScalerEngine engine;
+    private final OriginalReadGuard readGuard;
+    private final byte[] packMeta;
+
+    public TextureScalingPack(ScalerEngine engine, OriginalReadGuard readGuard, int packFormat) {
+        super(new PackLocationInfo(PACK_ID, Component.literal("Texture Scaler"), PackSource.BUILT_IN, Optional.empty()));
+        this.engine = engine;
+        this.readGuard = readGuard;
+        this.packMeta = ("{\"pack\":{\"description\":{\"text\":\"Texture Scaler overlay\"},"
+                + "\"pack_format\":" + packFormat + "}}").getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Builds the (required, always-selected, top-priority) profile for this overlay. */
+    public Pack createPack() {
+        return Pack.readMetaAndCreate(
+                location(),
+                new Pack.ResourcesSupplier() {
+                    @Override
+                    public PackResources openPrimary(PackLocationInfo info) {
+                        return TextureScalingPack.this;
+                    }
+
+                    @Override
+                    public PackResources openFull(PackLocationInfo info, Pack.Metadata metadata) {
+                        return TextureScalingPack.this;
+                    }
+                },
+                PackType.CLIENT_RESOURCES,
+                new PackSelectionConfig(true, Pack.Position.TOP, false));
+    }
+
+    @Override
+    public Set<String> getNamespaces(PackType type) {
+        if (type != PackType.CLIENT_RESOURCES) {
+            return Set.of();
+        }
+        return engine.getNamespaces();
+    }
+
+    @Override
+    public IoSupplier<InputStream> getRootResource(String... paths) {
+        if (paths.length == 1 && "pack.mcmeta".equals(paths[0])) {
+            return () -> new ByteArrayInputStream(packMeta);
+        }
+        return null;
+    }
+
+    @Override
+    public IoSupplier<InputStream> getResource(PackType type, ResourceLocation location) {
+        if (type != PackType.CLIENT_RESOURCES) {
+            return null;
+        }
+        // While the platform is reading an original, step aside so the lower packs win.
+        if (readGuard.isReadingOriginal()) {
+            return null;
+        }
+        byte[] png = engine.getScaledResource(location.getNamespace(), location.getPath());
+        if (png == null) {
+            return null;
+        }
+        return () -> new ByteArrayInputStream(png);
+    }
+
+    @Override
+    public void listResources(PackType type, String namespace, String path, ResourceOutput output) {
+        if (type != PackType.CLIENT_RESOURCES) {
+            return;
+        }
+        if (!path.startsWith("textures/")) {
+            return;
+        }
+        if (engine.isListing()) {
+            return;
+        }
+        Map<String, byte[]> scaled = engine.getListedScaled();
+        if (scaled.isEmpty()) {
+            return;
+        }
+        String prefix = namespace + ":" + path + "/";
+        int emitted = 0;
+        for (Map.Entry<String, byte[]> e : scaled.entrySet()) {
+            String key = e.getKey();
+            if (!key.startsWith(prefix)) {
+                continue;
+            }
+            byte[] bytes = e.getValue();
+            String spritePath = key.substring(namespace.length() + 1);
+            output.accept(ResourceLocation.fromNamespaceAndPath(namespace, spritePath),
+                    () -> new ByteArrayInputStream(bytes));
+            emitted++;
+        }
+        if (emitted > 0) {
+            LOGGER.info("[TextureScaler] listResources(ns={}, path={}): emitted {} scaled textures",
+                    namespace, path, emitted);
+        }
+    }
+
+    @Override
+    public void close() {
+        // singleton per module — nothing to close
+    }
+}

@@ -2,99 +2,85 @@
 
 ![Texture Scaler logo](texturescaler_logo.png)
 
-一个 **客户端专用（client-side）Forge 1.20.1 Mod**，自动把过大的方块/物品贴图按显卡能力等比缩小，
-从而修复 AMD 显卡 / Intel 核显上「中文变方块字 + 资源重载失败 + 崩溃」的问题。
+客户端专用（client-side）多版本 Mod：首次资源重载时读取 `GL_MAX_TEXTURE_SIZE`，用动态资源包把**会进入方块图集**的超大贴图在加载时**等比缩小**，让图集塞进 GPU 上限，修复 AMD / Intel 核显上「图集溢出 → 资源重载失败 → 中文变方块字 / 崩溃」的问题。不修改、不覆盖任何现有 Mod 的文件。
 
-> 英文名 *Texture Scaler* ｜ 需求说明见 [自动贴图缩放Mod-制作需求说明.md](自动贴图缩放Mod-制作需求说明.md)
+英文名 *Texture Scaler* ｜ 多版本架构见 [MULTIVERSION.md](MULTIVERSION.md)。
 
-## 原理（一句话）
+## 支持的版本
 
-启动时读取 `GL_MAX_TEXTURE_SIZE`（AMD RX580 / 多数核显为 16384，NVIDIA 为 32768），
-用动态资源包把「会进入方块贴图集（block atlas）、最大边超过阈值」的贴图在加载时等比缩小，
-atlas 就能塞进 GPU 上限，资源重载不再失败，字体（含中文字形）正常加载。
+| Minecraft | Forge | Fabric | NeoForge |
+|-----------|:-----:|:------:|:--------:|
+| 1.12.2 | ✅ | — | — |
+| 1.16.5 | ✅ | ✅ | — |
+| 1.18.2 | ✅ | ✅ | — |
+| 1.19.2 | ✅ | ✅ | — |
+| 1.20.1 | ✅ | ✅ | — |
+| 1.21.1 | ✅ | ✅ | ✅ |
+| 1.21.4+ | — | ✅ | ✅ |
 
-**不修改、不覆盖任何现有 Mod 的文件**（citymod / crab_city_facilities 等均不受影响），
-只通过运行时资源覆盖生效。
+1.12.2 无 Fabric（Fabric 自 1.14 起）；NeoForge 自 1.20.2 起存在。1.21.4 起只提供 Fabric / NeoForge。
 
 ## 缩放阈值
 
-```
-cap = clamp(GL_MAX_TEXTURE_SIZE / 32, 256, 2048)
-```
+按贴图**用途**分档：
 
-| GPU | GL_MAX_TEXTURE_SIZE | cap |
-|-----|--------------------|-----|
-| NVIDIA RTX 系列 | 32768 | 1024（大图基本不缩） |
-| AMD RX 580 / 多数 Intel UHD | 16384 | 512 |
-| 老核显 | 8192 | 256 |
+| 档位 | 命中条件 | NVIDIA 32768 | AMD/iGPU 16384 | 老核显 8192 |
+|------|---------|--------------|----------------|-------------|
+| 普通方块/物品贴图 | 最长边 ≤ `detailThreshold`（默认 1024） | 512 | **256** | 256 |
+| 大显示贴图（图集、屏幕、站牌） | 最长边 > 1024 | 4096 | **2048** | 1024 |
+| 长条贴图（长宽比 ≥ 4:1） | — | 8192 | **4096** | 2048 |
+
+- 一律**等比**缩小：把最长边压到对应档位，另一条边按同一比例缩放。
+- 动画条带（带 `.mcmeta`）只做**整数倍**缩放，且只在 `max(宽,高) > GL_MAX_TEXTURE_SIZE`（拼接器物理上放不下）时才缩，帧格与帧数保持不变；找不到合适的整数因子则整张不动。
+- `.mcmeta` 里**显式写了** `width`/`height` 的贴图一律不动。
 
 ## 配置文件
 
-位于 `.minecraft/config/texturescaler-client.toml`（Forge 客户端配置）：
+- **Forge / NeoForge**：`.minecraft/config/texturescaler-client.toml`
+- **Fabric**：`.minecraft/config/texturescaler.json`
+- **Forge 1.12.2**：`.minecraft/config/texturescaler.cfg`
 
-- `enabled`：总开关，默认 `true`
-- `capOverride`：手动覆盖阈值（像素），`0` = 自动（默认）
-- `capDivisor` / `capMin` / `capMax`：自动阈值公式参数
-- `diskCacheEnabled`：磁盘缓存，默认 `true`（缓存于 `.minecraft/texturescaler/cache/`）
-- `cacheDir`：缓存目录
-- `skipNamespaces`：不处理的命名空间，默认 `["minecraft", "texturescaler"]`
-- `extraTextureDirs`：额外会进方块 atlas 的贴图目录（如 `["blocks"]`），默认空
-- `debugLog`：调试日志，默认 `false`
+选项：`enabled`、`capOverride`、`capDivisor`、`capMin`、`capMax`、`diskCacheEnabled`、`cacheDir`、`skipNamespaces`、`extraTextureDirs`、`debugLog`。
 
-## 实现要点
+- `capOverride > 0`：忽略分档，**所有**贴图统一用该值。
+- `capDivisor` / `capMin` / `capMax`：仅在 `tieredCaps = false`（退回单一 cap 公式）时生效。
+- 分档的除数与阈值在 `core` 的 `ScalerConfig` 里，各加载器配置文件不暴露。
 
-- `AddPackFindersEvent`（mod 总线）注册一个 `Position.TOP` + `required` 的动态资源包
-  （id：`texturescaler_overlay`），优先级高于所有 mod 资源与玩家资源包。
-- `getResource` 只处理 `assets/<ns>/textures/**/*.png` 且属于方块贴图集范围的贴图：
-  先读 PNG 头快速跳过小图，超限的用 `NativeImage` 双线性等比缩小后返回覆盖。
-- 原始贴图从「其它 pack 的快照」读取，失败时回退到实时资源管理器（带线程内重入保护，不会递归）。
-- Blockbench 模型 UV 保护：扫描所有模型 JSON 的 `texture_size`，若模型按绝对像素 UV 引用贴图
-  且 `texture_size` 大于新尺寸，则跳过该贴图（避免渲染错乱）。
-- 缩放结果双缓存：内存（每次资源重载清空）+ 磁盘（key = 路径+原尺寸+cap 的哈希）。
+## 工程结构
+
+一套共享算法（`core`，纯 Java、零 Minecraft 依赖）+ 一层共享原版适配（`common`）+ 每个「版本 × 加载器」一个独立 Gradle 模块（`versions/<mc>/<loader>`）。详见 [MULTIVERSION.md](MULTIVERSION.md)。
 
 ## 构建
 
-```bash
-# 需要 JDK 17
-gradlew build
-# 产物：build/libs/texturescaler-1.1.0.jar
+```powershell
+# 单个模块
+cd versions\1.20.1\forge
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\temurin-17"
+.\gradlew.bat build
+
+# 全部模块，产物汇总到 dist/
+powershell -NoProfile -File scripts/build-all.ps1
+
+# 共享核心自测
+powershell -NoProfile -File scripts/test-core.ps1
+
+# 清理生成物（build/ .gradle/ run/ *.log；dist/ 默认保留）
+powershell -NoProfile -File scripts/clean.ps1
 ```
 
-放入 `mods/` 即可，服务端不需要安装。
+仓库根目录不是 Gradle 工程：每个 `versions/<mc>/<loader>/` 模块自带 wrapper，进入对应目录构建，或用 `scripts/build-all.*` 统一调度。
 
-## 更新记录
+产物命名：`texturescaler-<mc版本>-<加载器>-<mod版本>.jar`。放入 `mods/` 即可，服务端不需要安装。
 
-- **v1.1.0（正式发布）**：在 v1.0.1 修复版基础上完成三轮启动提速，实测本 mod 对启动耗时
-  的贡献从 ~10s 降到 ~2-3s：
-  - 磁盘尺寸清单（`cache/sizes.json`）：贴图路径 → 宽高的持久化清单，下次启动直接复用，
-    不再对每张贴图重新打开文件读 PNG 头（原每次 ~1.9 万次文件 IO）；
-  - 磁盘缓存命中不再解码原图：有尺寸（PNG 头）就能直接按缓存键取用缩放结果，原来即使缓存命中
-    也会先解码整张大图再查缓存（每次启动白解码 157+ 张大图）；Blockbench 模型 UV 约束检查提前到
-    解码之前（语义不变）；
-  - 精简缺失贴图查询：原图读取时若合并资源管理器（已包含全部资源包）查不到即判定缺失，此前还会
-    再按资源包逐个查一遍（每次重载缺失查询多达 3.7 万次，等于把同样的查找重复两遍）；
-  - 跨重载复用扫描结果：每次启动会有两轮资源重载（另一 mod 的动态资源触发），第二轮重载时若
-    资源包列表与上一轮一致，直接复用上一轮扫描结果，仅对新出现的贴图做增量检查（同时清理已消失
-    的条目），第二轮扫描时间大幅缩短。
-  更新 mod 后若遇异常，删除 `versions\<版本>\texturescaler\cache` 目录即可强制重建。
-- **v1.0.1**：正式修复版（在 iGPU / GL_MAX_TEXTURE_SIZE=16384 的机器上实测通过，方块字消除）。
-  在 0.0.2 的 `listResources` 基础上补齐两处致命问题：
-  - 图集拼接调用的是 `listResources("textures/block", ...)`（vanilla `atlases/blocks.json` 的
-    directory 源 `source: "block"` 被 `FileToIdConverter` 拼成 `textures/block`），而 0.0.2 只匹配
-    `"textures"` 就提前返回，导致缩放结果（磁盘缓存已生成）**从未真正 emit 进图集列表**，图集仍拿到
-    4096 原图、拼接依旧溢出。本版改为按前缀 `textures/` 匹配。
-  - emit 时未按目录前缀过滤，曾把整个命名空间的全部缩放条目发给每个目录源（如把
-    `textures/entity/...` 也发给 `textures/block` 源），`FileToIdConverter` 对不匹配前缀的路径做
-    `substring` 时抛 `StringIndexOutOfBoundsException` 导致重载失败；现在 emit 前按
-    `path + "/"` 前缀过滤，只输出该目录源名下的条目。
-- **0.0.2（早期）**：修复真正的根因——方块贴图集（atlas）是通过 `ResourceManager.listResources` 枚举
-  `textures/block/` 等目录来获取贴图的，**并不走 `getResource`**；旧版只实现了 `getResource`，
-  导致缩放过的大图永远进不了贴图集、拼接必然溢出。本版实现 `listResources`：每次重载惰性扫描一次
-  完整贴图清单，把超限贴图等比缩小后以覆盖方式重新输出（overlay pack 优先级高于 mod 包，合并时覆盖原图），
-  图集拼接即可成功、字体随之正常加载。
-- **0.0.1（早期）**：修复「命名空间发现依赖资源重载监听器时序」导致 overlay
-  pack 实际不被查询的问题。命名空间改为多来源兜底（资源管理器 + 仓库）且永不缓存空结果；原图读取
-  优先走实时资源管理器（带重入保护）；每次重载输出统计日志（查询/缩放/跳过/缺失/失败数量），便于排查。
+## 实现要点
+
+- 注册一个 `Position.TOP` + `required` 的动态资源包（id：`texturescaler_overlay`），优先级高于所有 mod 资源与玩家资源包。
+- 方块图集通过目录列举（`listResources`）或逐张 `getResource` 取图，两条路径都实现。
+- 命名空间发现同时读当前资源管理器与 pack repository（首次重载时前者还是空的，后者已就绪）。
+- 先读 PNG 头跳过小图；超限的用纯 JDK `ImageIO` 逐级减半 + 最终双线性缩放。
+- Blockbench 模型 UV 保护：扫描模型 JSON 的 `texture_size`，模型按绝对像素 UV 引用且 `texture_size` 大于新尺寸时跳过该贴图。
+- 缩放结果双缓存：内存（每次重载清空）+ 磁盘（key = 路径 + 原尺寸 + cap + 变体）。
+- **GL 时序**：`GL_MAX_TEXTURE_SIZE` 只在 GL capabilities 就绪后查询（首次资源重载）；mod 入口初始化阶段绝不调用任何 GL 入口，平台实现另有 capabilities 守卫，查询失败时退化为保守 cap 而不是崩溃。
 
 ## 作者
 
